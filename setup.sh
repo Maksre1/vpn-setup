@@ -10,6 +10,19 @@
 
 set -euo pipefail
 
+# Обработчик ошибок для красивого вывода при аварийном выходе
+cleanup_err() {
+    local exit_code=$?
+    local line_no=$1
+    if [[ "$exit_code" -ne 0 ]]; then
+        echo -e "\n${RED}[FAIL] Скрипт аварийно завершился на строке ${line_no} с кодом ошибки ${exit_code}.${NC}"
+        echo -e "${YELLOW}Полный лог ошибки доступен в файле: ${LOG_FILE}${NC}"
+        echo -e "${YELLOW}Вы можете просмотреть последние 20 строк лога командой:${NC}"
+        echo -e "${BOLD}tail -n 20 ${LOG_FILE}${NC}\n"
+    fi
+}
+trap 'cleanup_err $LINENO' EXIT
+
 # ── Глобальные переменные ────────────────────────────────────────────────────
 readonly LOG_FILE="/var/log/vpn-setup.log"
 readonly STATE_DIR="/etc/vpn-setup-state"
@@ -61,6 +74,22 @@ mark_done() {
 
 is_done() {
     [[ -f "$STATE_DIR/$1.done" ]]
+}
+
+wait_for_apt_locks() {
+    log_step "Проверка фоновых процессов обновления (apt/dpkg/dnf/yum)..."
+    local i=0
+    # Ждем, пока другие процессы менеджеров пакетов завершат свою работу
+    while pgrep -f "apt|dpkg|unattended-upgrades|dnf|yum" >/dev/null 2>&1; do
+        log_info "Обнаружен фоновый процесс обновления. Ожидаем освобождения менеджера пакетов..."
+        sleep 5
+        i=$((i+5))
+        if [[ "$i" -gt 300 ]]; then
+            log_fail "Фоновые процессы обновления заблокировали систему. Пожалуйста, перезапустите скрипт позже."
+            return 1
+        fi
+    done
+    return 0
 }
 
 find_free_port() {
@@ -210,13 +239,15 @@ update_system() {
     fi
 
     if [[ "$PKG_MANAGER" == "apt" ]]; then
+        wait_for_apt_locks
         log_step "Обновление списков пакетов (apt update)..."
-        DEBIAN_FRONTEND=noninteractive apt-get update -qq >> "$LOG_FILE" 2>&1
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq >> "$LOG_FILE" 2>&1 || true
         log_step "Установка базовых утилит (apt)..."
         local pkgs=(curl wget unzip jq ufw net-tools wireguard wireguard-tools iptables iproute2 openssl ethtool python3 build-essential)
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkgs[@]}" >> "$LOG_FILE" 2>&1
         log_ok "Базовые утилиты установлены"
     elif [[ "$PKG_MANAGER" == "dnf" ]]; then
+        wait_for_apt_locks
         log_step "Настройка EPEL репозитория для RHEL..."
         dnf install -y -q epel-release >> "$LOG_FILE" 2>&1 || true
         log_step "Установка базовых утилит (dnf)..."
