@@ -1052,13 +1052,12 @@ EOF
 # 7.5. setup_subscription_server
 # =============================================================================
 setup_subscription_server() {
-    step_begin "Сервер подписок (:8080 HTTPS)"
+    step_begin "Сервер подписок (:8080)"
 
     if is_done "setup_sub_server"; then
         step_skip; return 0
     fi
 
-    # Загружаем ранее сгенерированный путь подписки
     if [[ -f "$STATE_DIR/subscription_path" ]]; then
         source "$STATE_DIR/subscription_path"
     fi
@@ -1074,57 +1073,16 @@ setup_subscription_server() {
     chown vpnsub:vpnsub /var/www/html || true
     chmod 755 /var/www/html || true
 
-    # Генерация самоподписанного ECDSA-сертификата для HTTPS
-    local sub_cert_dir="/etc/vpn-sub-certs"
-    mkdir -p "$sub_cert_dir"
-    if [[ ! -f "$sub_cert_dir/server.key" ]]; then
-        openssl ecparam -genkey -name prime256v1 \
-            -out "$sub_cert_dir/server.key" 2>/dev/null
-        openssl req -new -x509 \
-            -key "$sub_cert_dir/server.key" \
-            -out "$sub_cert_dir/server.crt" \
-            -days 3650 \
-            -nodes \
-            -subj "/CN=vpn-sub/O=VPN/C=US" 2>/dev/null
-    fi
-    chmod 600 "$sub_cert_dir/server.key"
-    chmod 644 "$sub_cert_dir/server.crt"
-    chown vpnsub:vpnsub "$sub_cert_dir/server.key" "$sub_cert_dir/server.crt" 2>/dev/null || true
-
-    # Python HTTPS-сервер
-    cat > /var/www/html/https_server.py <<'PYEOF'
-import http.server, ssl, os, signal, sys
-
-CERT = "/etc/vpn-sub-certs/server.crt"
-KEY  = "/etc/vpn-sub-certs/server.key"
-PORT = 8080
-
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
-
-signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
-
-ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ctx.load_cert_chain(CERT, KEY)
-
-httpd = http.server.HTTPServer(("0.0.0.0", PORT), Handler)
-httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
-httpd.serve_forever()
-PYEOF
-    chmod 644 /var/www/html/https_server.py
-    chown vpnsub:vpnsub /var/www/html/https_server.py
-
     cat > /etc/systemd/system/vpn-sub.service <<EOF
 [Unit]
-Description=VPN Subscription HTTPS Server
+Description=VPN Subscription Web Server
 After=network.target
 
 [Service]
 Type=simple
 User=vpnsub
 WorkingDirectory=/var/www/html
-ExecStart=/usr/bin/python3 /var/www/html/https_server.py
+ExecStart=/usr/bin/python3 -m http.server 8080
 Restart=always
 RestartSec=3s
 
@@ -1136,7 +1094,7 @@ EOF
     systemctl enable vpn-sub >> "$LOG_FILE" 2>&1 || true
     systemctl restart vpn-sub >> "$LOG_FILE" 2>&1 || true
 
-    ufw allow 8080/tcp comment "VPN subscription HTTPS" >> "$LOG_FILE" 2>&1
+    ufw allow 8080/tcp comment "VPN subscription port" >> "$LOG_FILE" 2>&1
 
     mark_done "setup_sub_server"
     step_finish
@@ -1283,13 +1241,13 @@ EOF
     printf "\n  ${BOLD}Ссылки для подключения:${NC}\n\n"
 
     printf "  ${CYAN}Karing / Sing-box:${NC}\n"
-    printf "  → https://%s:8080/singbox.json\n\n" "$server_ip"
+    printf "  → http://%s:8080/singbox.json\n\n" "$server_ip"
 
     printf "  ${CYAN}Clash Verge / Mihomo:${NC}\n"
-    printf "  → https://%s:8080/clash.yaml\n\n" "$server_ip"
+    printf "  → http://%s:8080/clash.yaml\n\n" "$server_ip"
 
     printf "  ${CYAN}V2Ray (единая подписка Base64):${NC}\n"
-    printf "  → https://%s:8080/%s\n\n" "$server_ip" "$SUB_PATH"
+    printf "  → http://%s:8080/%s\n\n" "$server_ip" "$SUB_PATH"
 
     printf "  %s\n" "──────────────────────────────────────────────────────────"
     printf "  Полные креденциалы: ${BOLD}%s${NC}\n\n" "$INFO_FILE"
@@ -1324,7 +1282,6 @@ do_uninstall() {
     rm -rf /etc/wgcf
     rm -rf /etc/wireguard/wgcf-warp.conf
     rm -rf /etc/vpn-setup-state
-    rm -rf /etc/vpn-sub-certs
     rm -rf /var/www/html
     rm -f /root/vpn-setup-info.txt
     rm -f /root/vpn-setup-sub.txt
@@ -1411,7 +1368,7 @@ do_status() {
     fi
     if [[ -f "$STATE_DIR/subscription_path" ]]; then
         source "$STATE_DIR/subscription_path"
-        printf "\n  Подписка: ${BOLD}https://%s:8080/%s${NC}\n" "$server_ip" "${SUB_PATH:-?}"
+        printf "\n  Подписка: ${BOLD}http://%s:8080/%s${NC}\n" "$server_ip" "${SUB_PATH:-?}"
     fi
 
     printf "\n"
