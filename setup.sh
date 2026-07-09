@@ -471,11 +471,40 @@ install_mieru() {
 
     local tmp_file="/tmp/${file_name}"
     log_step "Скачивание $file_name..."
-    if curl -L --max-time 120 -o "$tmp_file" "$download_url" >> "$LOG_FILE" 2>&1; then
-        log_ok "Скачано"
+    curl -L --max-time 120 -o "$tmp_file" "$download_url" >> "$LOG_FILE" 2>&1
+
+    # Проверяем размер скачанного файла. Если размер меньше 1 МБ, значит скачалась ошибка (например, 504 Gateway Timeout на Github)
+    local file_size=0
+    if [[ -f "$tmp_file" ]]; then
+        file_size=$(stat -c%s "$tmp_file" 2>/dev/null || stat -f%z "$tmp_file" 2>/dev/null || echo 0)
+    fi
+
+    if [[ $file_size -lt 1000000 ]]; then
+        log_info "Файл поврежден (размер ${file_size} байт). Откатываемся на стабильную версию 3.33.0..."
+        rm -f "$tmp_file"
+        mita_version="3.33.0"
+        if [[ "$PKG_MANAGER" == "apt" ]]; then
+            file_name="mita_${mita_version}_${deb_arch}.deb"
+            download_url="https://github.com/enfein/mieru/releases/download/v${mita_version}/${file_name}"
+        else
+            file_name="mita-${mita_version}-1.${rpm_arch}.rpm"
+            download_url="https://github.com/enfein/mieru/releases/download/v${mita_version}/${file_name}"
+        fi
+        tmp_file="/tmp/${file_name}"
+        log_step "Повторное скачивание $file_name..."
+        if ! curl -L --max-time 120 -o "$tmp_file" "$download_url" >> "$LOG_FILE" 2>&1; then
+            log_fail "Не удалось скачать mita даже после отката на 3.33.0"
+            return 1
+        fi
+        # Проверим повторно размер
+        file_size=$(stat -c%s "$tmp_file" 2>/dev/null || stat -f%z "$tmp_file" 2>/dev/null || echo 0)
+        if [[ $file_size -lt 1000000 ]]; then
+            log_fail "Размер файла версии 3.33.0 также неверный: ${file_size} байт."
+            return 1
+        fi
+        log_ok "Скачана версия 3.33.0"
     else
-        log_fail "Не удалось скачать mita"
-        return 1
+        log_ok "Скачано"
     fi
 
     log_step "Установка пакета mita..."
