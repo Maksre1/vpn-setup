@@ -607,7 +607,7 @@ EOF
 
     systemctl daemon-reload >> "$LOG_FILE" 2>&1
     systemctl enable hysteria-server >> "$LOG_FILE" 2>&1 || true
-    if systemctl start hysteria-server >> "$LOG_FILE" 2>&1; then
+    if systemctl restart hysteria-server >> "$LOG_FILE" 2>&1 || systemctl start hysteria-server >> "$LOG_FILE" 2>&1; then
         log_ok "Сервис hysteria запущен"
     else
         log_fail "Не удалось запустить hysteria-server"
