@@ -111,11 +111,17 @@ find_free_port() {
     local range_min="${2:-20000}"
     local range_max="${3:-65000}"
     local port
+    local attempts=0
     while true; do
         port=$(( RANDOM % (range_max - range_min + 1) + range_min ))
         if ! ss -"${proto}"ln 2>/dev/null | grep -q ":${port} "; then
             echo "$port"
             return 0
+        fi
+        attempts=$((attempts + 1))
+        if [[ $attempts -ge 100 ]]; then
+            log_fail "Не удалось найти свободный порт в диапазоне ${range_min}-${range_max} за 100 попыток."
+            return 1
         fi
     done
 }
@@ -190,13 +196,19 @@ setup_dns() {
     # 2. Традиционный /etc/resolv.conf
     log_info "Обновление /etc/resolv.conf..."
     chattr -i /etc/resolv.conf 2>/dev/null || true
-    cat > /etc/resolv.conf.tmp <<EOF
+    # На Ubuntu 22+/24+ /etc/resolv.conf является симлинком на systemd-resolved.
+    # mv сломал бы симлинк, поэтому пишем напрямую в реальный файл назначения.
+    local resolv_target="/etc/resolv.conf"
+    if [ -L /etc/resolv.conf ]; then
+        resolv_target=$(readlink -f /etc/resolv.conf)
+        log_info "/etc/resolv.conf — симлинк, пишем в реальный путь: $resolv_target"
+    fi
+    cat > "$resolv_target" <<EOF
 # Сгенерировано setup.sh
 nameserver 1.1.1.1
 nameserver 8.8.8.8
 nameserver 1.0.0.1
 EOF
-    mv /etc/resolv.conf.tmp /etc/resolv.conf || true
     log_ok "/etc/resolv.conf обновлен"
 
     mark_done "setup_dns"
@@ -670,19 +682,28 @@ EOF
     local server_ip
     server_ip=$(get_server_ip)
 
-    local cert_sha256=""
+    local cert_sha256_hex="" cert_sha256_b64=""
     if [[ -f "$H2_CERT_DIR/server.crt" ]]; then
-        cert_sha256=$(openssl x509 -in "$H2_CERT_DIR/server.crt" -noout -fingerprint -sha256 | cut -d'=' -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+        # Получаем отпечаток SHA-256 в hex-формате (для Clash fingerprint)
+        cert_sha256_hex=$(openssl x509 -in "$H2_CERT_DIR/server.crt" -noout -fingerprint -sha256 \
+            | cut -d'=' -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+        # Конвертируем hex → base64: sing-box и Hysteria2 URI требуют base64-формат
+        cert_sha256_b64=$(echo "$cert_sha256_hex" | python3 -c "
+import sys, binascii, base64
+h = sys.stdin.read().strip()
+print(base64.b64encode(binascii.unhexlify(h)).decode())
+" 2>/dev/null || echo "$cert_sha256_hex")
     fi
 
-    H2_URI="hysteria2://${H2_PASS}@${server_ip}:${H2_PORT}?obfs=salamander&obfs-password=${H2_OBFS_PASS}&pinSHA256=${cert_sha256}&sni=${H2_CERT_CN}"
+    H2_URI="hysteria2://${H2_PASS}@${server_ip}:${H2_PORT}?obfs=salamander&obfs-password=${H2_OBFS_PASS}&pinSHA256=${cert_sha256_b64}&sni=${H2_CERT_CN}"
 
     cat > "$STATE_DIR/hysteria2.env" <<EOF
 H2_PORT="${H2_PORT}"
 H2_PASS="${H2_PASS}"
 H2_OBFS_PASS="${H2_OBFS_PASS}"
 H2_CERT_CN="${H2_CERT_CN}"
-H2_CERT_PIN="${cert_sha256}"
+H2_CERT_PIN="${cert_sha256_b64}"
+H2_CERT_PIN_HEX="${cert_sha256_hex}"
 H2_URI="${H2_URI}"
 H2_VERSION="$(hysteria version 2>/dev/null | head -n 1 || echo "unknown")"
 EOF
@@ -698,17 +719,17 @@ EOF
 setup_warp() {
     log_section "7. Настройка Cloudflare WARP (wgcf)"
 
+    if is_done "setup_warp"; then
+        log_ok "Шаг уже выполнен, пропускаем."
+        return 0
+    fi
+
     # Загружаем порты из файлов состояния, если они есть
     if [[ -f "$STATE_DIR/mieru.env" ]]; then
         source "$STATE_DIR/mieru.env"
     fi
     if [[ -f "$STATE_DIR/hysteria2.env" ]]; then
         source "$STATE_DIR/hysteria2.env"
-    fi
-
-    if is_done "setup_warp"; then
-        log_ok "Шаг уже выполнен, пропускаем."
-        return 0
     fi
 
     log_step "Установка wgcf..."
@@ -967,6 +988,7 @@ ROUTING_SCRIPT
 [Unit]
 Description=WARP Policy Routing
 After=network-online.target wg-quick@wgcf-warp.service
+Requires=wg-quick@wgcf-warp.service
 
 [Service]
 Type=oneshot
@@ -999,6 +1021,13 @@ setup_subscription_server() {
     mkdir -p /var/www/html
 
     log_step "Настройка systemd службы vpn-sub..."
+    # Создаём непривилегированного пользователя для раздачи файлов подписки
+    if ! id vpnsub &>/dev/null; then
+        useradd -r -s /sbin/nologin -d /var/www/html vpnsub >> "$LOG_FILE" 2>&1 || true
+    fi
+    chown vpnsub:vpnsub /var/www/html || true
+    chmod 755 /var/www/html || true
+
     cat > /etc/systemd/system/vpn-sub.service <<EOF
 [Unit]
 Description=VPN Subscription Web Server
@@ -1006,10 +1035,11 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=vpnsub
 WorkingDirectory=/var/www/html
 ExecStart=/usr/bin/python3 -m http.server 8080
 Restart=always
+RestartSec=3s
 
 [Install]
 WantedBy=multi-user.target
@@ -1132,7 +1162,8 @@ proxies:
     obfs: salamander
     obfs-password: ${H2_OBFS_PASS:-}
     sni: ${H2_CERT_CN:-mail.example.com}
-    pinned-peer-cert-sha256: ${H2_CERT_PIN:-}
+    fingerprint: ${H2_CERT_PIN_HEX:-}
+    skip-cert-verify: false
 
   - name: Mieru-Proxy
     type: mieru
