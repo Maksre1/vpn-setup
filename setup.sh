@@ -970,11 +970,30 @@ print_summary() {
     local warp_status="не активен"
     if wg show wgcf-warp &>/dev/null 2>&1; then warp_status="активен"; fi
 
+    local sub_content=""
+    if [[ -n "${H2_URI:-}" ]]; then
+        sub_content+="${H2_URI}"$'\n'
+    fi
+    if [[ -n "${MIERU_URI:-}" ]]; then
+        sub_content+="${MIERU_URI}"$'\n'
+    fi
+    local sub_base64=""
+    sub_base64=$(echo -n "$sub_content" | base64 | tr -d '\r\n')
+
+    echo -n "$sub_base64" > /root/vpn-setup-sub.txt
+    chmod 600 /root/vpn-setup-sub.txt
+
     cat > "$INFO_FILE" <<EOF
 ================================================================================
   VPN Server Setup — Информация для подключения
   Сервер IP: ${server_ip}
 ================================================================================
+
+  [0] ЕДИНАЯ ПОДПИСКА (Sub / V2ray Base64 format)
+  Скопируйте этот блок в файл или загрузите на хостинг для раздачи подписки:
+  ----------------------------------------------------------------------
+  ${sub_base64}
+  ----------------------------------------------------------------------
 
   [1] MIERU (mita)
   TCP порт:    ${MIERU_PORT:-НЕ ОПРЕДЕЛЁН}
