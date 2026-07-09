@@ -608,6 +608,14 @@ EOF
 setup_warp() {
     log_section "7. Настройка Cloudflare WARP (wgcf)"
 
+    # Загружаем порты из файлов состояния, если они есть
+    if [[ -f "$STATE_DIR/mieru.env" ]]; then
+        source "$STATE_DIR/mieru.env"
+    fi
+    if [[ -f "$STATE_DIR/hysteria2.env" ]]; then
+        source "$STATE_DIR/hysteria2.env"
+    fi
+
     if is_done "setup_warp"; then
         log_ok "Шаг уже выполнен, пропускаем."
         return 0
@@ -728,27 +736,79 @@ EOF
         ip route add default dev wgcf-warp table 200 2>/dev/null || true
     fi
 
+    # Получаем endpoint IP для исключения из петли маршрутизации
+    local endpoint_ip=""
+    if [[ -f "/etc/wireguard/wgcf-warp.conf" ]]; then
+        endpoint_ip=$(grep -i "^Endpoint" /etc/wireguard/wgcf-warp.conf | awk -F'=' '{print $2}' | tr -d ' ' | cut -d':' -f1 | tr -d '[]')
+    fi
+
     local mita_uid hysteria_uid
     mita_uid=$(id -u mita 2>/dev/null || echo "")
     hysteria_uid=$(id -u hysteria 2>/dev/null || echo "")
 
-    setup_warp_routing_rules() {
-        local uid="$1"
-        if [[ -z "$uid" ]]; then return 0; fi
-        if ! iptables -t mangle -C OUTPUT -m owner --uid-owner "$uid" -j MARK --set-mark 0x1 2>/dev/null; then
-            iptables -t mangle -A OUTPUT -m owner --uid-owner "$uid" -j MARK --set-mark 0x1
+    # Очищаем старые правила, если они были, чтобы избежать дублирования
+    iptables -t mangle -D OUTPUT -o lo -j RETURN 2>/dev/null || true
+    iptables -t mangle -D OUTPUT -p udp --dport 53 -j RETURN 2>/dev/null || true
+    iptables -t mangle -D OUTPUT -p tcp --dport 53 -j RETURN 2>/dev/null || true
+    if [[ -n "$MIERU_PORT" ]]; then
+        iptables -t mangle -D OUTPUT -p tcp --sport "$MIERU_PORT" -j RETURN 2>/dev/null || true
+    fi
+    if [[ -n "$H2_PORT" ]]; then
+        iptables -t mangle -D OUTPUT -p udp --sport "$H2_PORT" -j RETURN 2>/dev/null || true
+    fi
+    if [[ -n "$endpoint_ip" ]]; then
+        if [[ "$endpoint_ip" =~ : ]]; then
+            ip6tables -t mangle -D OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
+        else
+            iptables -t mangle -D OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
         fi
-    }
-    setup_warp_routing_rules "$mita_uid"
-    setup_warp_routing_rules "$hysteria_uid"
+    fi
+    if [[ -n "$mita_uid" ]]; then
+        iptables -t mangle -D OUTPUT -m owner --uid-owner "$mita_uid" -j MARK --set-mark 0x1 2>/dev/null || true
+    fi
+    if [[ -n "$hysteria_uid" ]]; then
+        iptables -t mangle -D OUTPUT -m owner --uid-owner "$hysteria_uid" -j MARK --set-mark 0x1 2>/dev/null || true
+    fi
+
+    # Накатываем новые правила
+    iptables -t mangle -A OUTPUT -o lo -j RETURN
+    iptables -t mangle -A OUTPUT -p udp --dport 53 -j RETURN
+    iptables -t mangle -A OUTPUT -p tcp --dport 53 -j RETURN
+    if [[ -n "$MIERU_PORT" ]]; then
+        iptables -t mangle -A OUTPUT -p tcp --sport "$MIERU_PORT" -j RETURN
+    fi
+    if [[ -n "$H2_PORT" ]]; then
+        iptables -t mangle -A OUTPUT -p udp --sport "$H2_PORT" -j RETURN
+    fi
+    if [[ -n "$endpoint_ip" ]]; then
+        if [[ "$endpoint_ip" =~ : ]]; then
+            ip6tables -t mangle -A OUTPUT -d "$endpoint_ip" 2>/dev/null || true
+        else
+            iptables -t mangle -A OUTPUT -d "$endpoint_ip" -j RETURN
+        fi
+    fi
+    if [[ -n "$mita_uid" ]]; then
+        iptables -t mangle -A OUTPUT -m owner --uid-owner "$mita_uid" -j MARK --set-mark 0x1
+    fi
+    if [[ -n "$hysteria_uid" ]]; then
+        iptables -t mangle -A OUTPUT -m owner --uid-owner "$hysteria_uid" -j MARK --set-mark 0x1
+    fi
 
     if ! ip rule show 2>/dev/null | grep -q "fwmark 0x1 lookup 200"; then
         ip rule add fwmark 0x1 table 200 priority 100
     fi
 
+    # Включаем маскарадинг в NAT
+    iptables -t nat -D POSTROUTING -o wgcf-warp -j MASQUERADE 2>/dev/null || true
+    iptables -t nat -A POSTROUTING -o wgcf-warp -j MASQUERADE
+
     cat > /etc/network/if-up.d/warp-routing <<'ROUTING_SCRIPT'
 #!/bin/bash
 sleep 5
+STATE_DIR="/etc/vpn-setup-state"
+[ -f "$STATE_DIR/mieru.env" ] && source "$STATE_DIR/mieru.env"
+[ -f "$STATE_DIR/hysteria2.env" ] && source "$STATE_DIR/hysteria2.env"
+
 mkdir -p /etc/iproute2
 if [ ! -f /etc/iproute2/rt_tables ]; then
     cat > /etc/iproute2/rt_tables <<EOF
@@ -767,12 +827,44 @@ fi
 if ! ip rule show 2>/dev/null | grep -q "fwmark 0x1 lookup 200"; then
     ip rule add fwmark 0x1 table 200 priority 100 2>/dev/null || true
 fi
-for svc in mita hysteria; do
-    uid=$(id -u "$svc" 2>/dev/null) || continue
-    if ! iptables -t mangle -C OUTPUT -m owner --uid-owner "$uid" -j MARK --set-mark 0x1 2>/dev/null; then
-        iptables -t mangle -A OUTPUT -m owner --uid-owner "$uid" -j MARK --set-mark 0x1 2>/dev/null || true
+
+endpoint_ip=""
+if [ -f "/etc/wireguard/wgcf-warp.conf" ]; then
+    endpoint_ip=$(grep -i "^Endpoint" /etc/wireguard/wgcf-warp.conf | awk -F'=' '{print $2}' | tr -d ' ' | cut -d':' -f1 | tr -d '[]')
+fi
+
+iptables -t mangle -F OUTPUT 2>/dev/null || true
+ip6tables -t mangle -F OUTPUT 2>/dev/null || true
+
+iptables -t mangle -A OUTPUT -o lo -j RETURN
+iptables -t mangle -A OUTPUT -p udp --dport 53 -j RETURN
+iptables -t mangle -A OUTPUT -p tcp --dport 53 -j RETURN
+
+if [ -n "$H2_PORT" ]; then
+    iptables -t mangle -A OUTPUT -p udp --sport "$H2_PORT" -j RETURN
+fi
+if [ -n "$MIERU_PORT" ]; then
+    iptables -t mangle -A OUTPUT -p tcp --sport "$MIERU_PORT" -j RETURN
+fi
+if [ -n "$endpoint_ip" ]; then
+    if [[ "$endpoint_ip" =~ : ]]; then
+        ip6tables -t mangle -A OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
+    else
+        iptables -t mangle -A OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
     fi
-done
+fi
+
+mita_uid=$(id -u mita 2>/dev/null)
+if [ -n "$mita_uid" ]; then
+    iptables -t mangle -A OUTPUT -m owner --uid-owner "$mita_uid" -j MARK --set-mark 0x1
+fi
+hysteria_uid=$(id -u hysteria 2>/dev/null)
+if [ -n "$hysteria_uid" ]; then
+    iptables -t mangle -A OUTPUT -m owner --uid-owner "$hysteria_uid" -j MARK --set-mark 0x1
+fi
+
+iptables -t nat -D POSTROUTING -o wgcf-warp -j MASQUERADE 2>/dev/null || true
+iptables -t nat -A POSTROUTING -o wgcf-warp -j MASQUERADE
 ROUTING_SCRIPT
     chmod +x /etc/network/if-up.d/warp-routing
 
