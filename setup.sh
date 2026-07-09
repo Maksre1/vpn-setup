@@ -985,6 +985,49 @@ EOF
 }
 
 # =============================================================================
+# 7.5. setup_subscription_server
+# =============================================================================
+setup_subscription_server() {
+    log_section "7.5. Настройка веб-сервера подписки (vpn-sub)"
+
+    if is_done "setup_sub_server"; then
+        log_ok "Шаг уже выполнен, пропускаем."
+        return 0
+    fi
+
+    log_step "Создание каталога веб-сервера..."
+    mkdir -p /var/www/html
+
+    log_step "Настройка systemd службы vpn-sub..."
+    cat > /etc/systemd/system/vpn-sub.service <<EOF
+[Unit]
+Description=VPN Subscription Web Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/html
+ExecStart=/usr/bin/python3 -m http.server 8080
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    log_step "Перезапуск службы vpn-sub..."
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    systemctl enable vpn-sub >> "$LOG_FILE" 2>&1 || true
+    systemctl restart vpn-sub >> "$LOG_FILE" 2>&1 || true
+
+    log_step "Настройка брандмауэра для порта 8080..."
+    ufw allow 8080/tcp comment "VPN subscription port" >> "$LOG_FILE" 2>&1
+
+    mark_done "setup_sub_server"
+    log_ok "Шаг 7.5 завершён."
+}
+
+# =============================================================================
 # 8. print_summary
 # =============================================================================
 print_summary() {
@@ -1017,6 +1060,10 @@ print_summary() {
 
     echo -n "$sub_base64" > /root/vpn-setup-sub.txt
     chmod 600 /root/vpn-setup-sub.txt
+
+    mkdir -p /var/www/html
+    echo -n "$sub_base64" > /var/www/html/sub.txt
+    chmod 644 /var/www/html/sub.txt
 
     cat > "$INFO_FILE" <<EOF
 ================================================================================
@@ -1119,6 +1166,7 @@ main() {
     install_mieru
     install_hysteria2
     setup_warp
+    setup_subscription_server
     print_summary
 }
 
