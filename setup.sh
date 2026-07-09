@@ -507,13 +507,13 @@ install_mieru() {
 EOF
 
     systemctl enable mita >> "$LOG_FILE" 2>&1 || true
-    systemctl start mita >> "$LOG_FILE" 2>&1 || true
+    systemctl restart mita >> "$LOG_FILE" 2>&1 || systemctl start mita >> "$LOG_FILE" 2>&1 || true
     sleep 2
 
     mita apply config "$mita_config_file" >> "$LOG_FILE" 2>&1
     rm -f "$mita_config_file"
 
-    mita start >> "$LOG_FILE" 2>&1 || true
+    systemctl restart mita >> "$LOG_FILE" 2>&1 || true
     ufw allow "$MIERU_PORT"/tcp comment "Mieru proxy" >> "$LOG_FILE" 2>&1
 
     mkdir -p "$STATE_DIR"
