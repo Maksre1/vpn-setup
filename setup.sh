@@ -405,7 +405,10 @@ net.ipv4.ip_local_port_range = 10240 65000
 net.ipv4.tcp_fin_timeout = 30
 net.ipv4.icmp_echo_ignore_all = 1
 net.ipv4.ip_forward = 1
-net.ipv6.conf.all.forwarding = 1
+# Отключение IPv6 для предотвращения утечек
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 
     sysctl --system >> "$LOG_FILE" 2>&1 || true
@@ -753,6 +756,8 @@ setup_warp() {
     cp "$wg_conf_src" "$wg_conf_dst"
     sed -i '/^DNS =/d' "$wg_conf_dst"
     sed -i '/^\[Interface\]/a Table = off' "$wg_conf_dst"
+    # Удаляем IPv6-адрес из Address, чтобы wg-quick не упал при отключенном IPv6
+    sed -i -E 's/Address\s*=\s*([^,]+),\s*[a-fA-F0-9:]+\/[0-9]+/Address = \1/g' "$wg_conf_dst"
     sed -i 's|AllowedIPs = 0\.0\.0\.0/0|AllowedIPs = 0.0.0.0/1, 128.0.0.0/1|g' "$wg_conf_dst"
     sed -i 's|AllowedIPs = ::/0||g' "$wg_conf_dst"
     sed -i '/^PostUp/d'   "$wg_conf_dst"
