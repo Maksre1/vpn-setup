@@ -990,6 +990,15 @@ print_summary() {
     "rpcPort": 8964
   }
 
+  Конфиг Mieru для Clash / Mihomo (YAML):
+  - name: Mieru-Proxy
+    type: mieru
+    server: ${server_ip}
+    port: ${MIERU_PORT:-PORT}
+    username: ${MIERU_USER:-USER}
+    password: ${MIERU_PASS:-PASS}
+    transport: tcp
+
   [2] HYSTERIA2 (Salamander obfs + самоподписанный TLS)
   UDP порт:    ${H2_PORT:-НЕ ОПРЕДЕЛЁН}
   Пароль:      ${H2_PASS:-НЕ ОПРЕДЕЛЁН}
