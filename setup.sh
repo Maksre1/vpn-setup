@@ -10,6 +10,10 @@
 
 set -euo pipefail
 
+# Цвета для вывода (до trap, чтобы cleanup_err мог их использовать)
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
 # Обработчик ошибок для красивого вывода при аварийном выходе
 cleanup_err() {
     local exit_code=$?
@@ -34,11 +38,10 @@ readonly H2_CONFIG_DIR="/etc/hysteria"
 readonly H2_CERT_DIR="/etc/hysteria/certs"
 readonly INFO_FILE="/root/vpn-setup-info.txt"
 
-SSH_PORT="${SSH_PORT:-22}"
+# Рандомный путь для подписки (для безопасности — не угадать URL)
+SUB_PATH="$(openssl rand -hex 16)"
 
-# Цвета для вывода
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+SSH_PORT="${SSH_PORT:-22}"
 
 # ── Прогресс-дисплей ────────────────────────────────────────────────────────
 
@@ -375,7 +378,7 @@ detect_system_specs() {
     NET_IFACE=$(ip route | awk '/default/{print $5; exit}')
     LINK_SPEED_MBPS=0
     if [[ -n "$NET_IFACE" ]]; then
-        LINK_SPEED_MBPS=$(ethtool "$NET_IFACE" 2>/dev/null | grep -i "Speed:" | grep -oP '\d+' | head -1 || echo 0)
+        LINK_SPEED_MBPS=$(ethtool "$NET_IFACE" 2>/dev/null | grep -i "Speed:" | grep -oE '[0-9]+' | head -1 || echo 0)
     fi
 
     # Вычисление буферов
@@ -797,7 +800,7 @@ setup_warp() {
 
     local warp_dir="/etc/wgcf"
     mkdir -p "$warp_dir"
-    cd "$warp_dir"
+    pushd "$warp_dir" >/dev/null
 
     log_step "Регистрация нового WARP-аккаунта..."
     if [[ ! -f "$warp_dir/wgcf-account.toml" ]]; then
@@ -922,7 +925,7 @@ EOF
     fi
     if [[ -n "$endpoint_ip" ]]; then
         if [[ "$endpoint_ip" =~ : ]]; then
-            ip6tables -t mangle -A OUTPUT -d "$endpoint_ip" 2>/dev/null || true
+            ip6tables -t mangle -A OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
         else
             iptables -t mangle -A OUTPUT -d "$endpoint_ip" -j RETURN
         fi
@@ -1029,6 +1032,8 @@ EOF
     systemctl enable warp-routing >> "$LOG_FILE" 2>&1 || true
     systemctl start warp-routing >> "$LOG_FILE" 2>&1 || true
 
+    popd >/dev/null
+
     mark_done "setup_warp"
     step_finish
 }
@@ -1042,6 +1047,15 @@ setup_subscription_server() {
     if is_done "setup_sub_server"; then
         step_skip; return 0
     fi
+
+    # Загружаем ранее сгенерированный путь подписки (из setup_warp или глобальной переменной)
+    if [[ -f "$STATE_DIR/subscription_path" ]]; then
+        source "$STATE_DIR/subscription_path"
+    fi
+    # Сохраняем текущий путь (если state-файл ещё не создан)
+    mkdir -p "$STATE_DIR"
+    echo "SUB_PATH=\"${SUB_PATH}\"" > "$STATE_DIR/subscription_path"
+    chmod 600 "$STATE_DIR/subscription_path"
 
     log_step "Создание каталога веб-сервера..."
     mkdir -p /var/www/html
@@ -1091,6 +1105,7 @@ print_summary() {
 
     if [[ -f "$STATE_DIR/mieru.env" ]]; then source "$STATE_DIR/mieru.env"; fi
     if [[ -f "$STATE_DIR/hysteria2.env" ]]; then source "$STATE_DIR/hysteria2.env"; fi
+    if [[ -f "$STATE_DIR/subscription_path" ]]; then source "$STATE_DIR/subscription_path"; fi
 
     local server_ip
     server_ip=$(get_server_ip)
@@ -1110,8 +1125,8 @@ print_summary() {
     chmod 600 /root/vpn-setup-sub.txt
 
     mkdir -p /var/www/html
-    echo -n "$sub_base64" > /var/www/html/sub.txt
-    chmod 644 /var/www/html/sub.txt
+    echo -n "$sub_base64" > "/var/www/html/${SUB_PATH}"
+    chmod 644 "/var/www/html/${SUB_PATH}"
 
     # singbox.json
     cat > /var/www/html/singbox.json <<JSON
@@ -1229,7 +1244,7 @@ EOF
     printf "  → http://%s:8080/clash.yaml\n\n" "$server_ip"
 
     printf "  ${CYAN}V2Ray (единая подписка Base64):${NC}\n"
-    printf "  → http://%s:8080/sub.txt\n\n" "$server_ip"
+    printf "  → http://%s:8080/%s\n\n" "$server_ip" "$SUB_PATH"
 
     printf "  %s\n" "──────────────────────────────────────────────────────────"
     printf "  Полные креденциалы: ${BOLD}%s${NC}\n" "$INFO_FILE"
