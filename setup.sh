@@ -586,13 +586,20 @@ EOF
     ufw allow "$H2_PORT"/udp comment "Hysteria2" >> "$LOG_FILE" 2>&1
     local server_ip
     server_ip=$(get_server_ip)
-    H2_URI="hysteria2://${H2_PASS}@${server_ip}:${H2_PORT}?obfs=salamander&obfs-password=${H2_OBFS_PASS}&insecure=1&sni=${H2_CERT_CN}"
+
+    local cert_sha256=""
+    if [[ -f "$H2_CERT_DIR/server.crt" ]]; then
+        cert_sha256=$(openssl x509 -in "$H2_CERT_DIR/server.crt" -noout -fingerprint -sha256 | cut -d'=' -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+    fi
+
+    H2_URI="hysteria2://${H2_PASS}@${server_ip}:${H2_PORT}?obfs=salamander&obfs-password=${H2_OBFS_PASS}&pinSHA256=${cert_sha256}&sni=${H2_CERT_CN}"
 
     cat > "$STATE_DIR/hysteria2.env" <<EOF
 H2_PORT="${H2_PORT}"
 H2_PASS="${H2_PASS}"
 H2_OBFS_PASS="${H2_OBFS_PASS}"
 H2_CERT_CN="${H2_CERT_CN}"
+H2_CERT_PIN="${cert_sha256}"
 H2_URI="${H2_URI}"
 H2_VERSION="$(hysteria version 2>/dev/null | head -n 1 || echo "unknown")"
 EOF
