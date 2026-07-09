@@ -452,11 +452,12 @@ install_mieru() {
     mita_version=$(curl -s --max-time 15 \
         "https://api.github.com/repos/enfein/mieru/releases/latest" \
         | grep '"tag_name"' \
-        | sed 's/.*"tag_name": *"v\?\([^"]*\)".*/\1/')
+        | sed 's/.*"tag_name": *"v\?\([^"]*\)".*/\1/' || echo "")
 
-    if [[ -z "$mita_version" ]]; then
-        log_fail "Не удалось получить версию mita."
-        return 1
+    # Если API гитхаба вернуло ошибку или исчерпан лимит запросов, используем стабильную версию
+    if [[ -z "$mita_version" || "$mita_version" == *"limit"* || "$mita_version" == *"message"* ]]; then
+        mita_version="3.34.0"
+        log_info "GitHub API недоступен или лимит исчерпан. Используем стабильную версию Mieru: ${mita_version}"
     fi
 
     local file_name download_url
