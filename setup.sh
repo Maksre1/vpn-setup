@@ -1005,7 +1005,7 @@ print_summary() {
       port: ${MIERU_PORT:-PORT}
       username: ${MIERU_USER:-USER}
       password: ${MIERU_PASS:-PASS}
-      transport: tcp
+      transport: TCP
 
   proxy-groups:
     - name: PROXY
