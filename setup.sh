@@ -14,6 +14,10 @@ set -euo pipefail
 cleanup_err() {
     local exit_code=$?
     local line_no=$1
+    # Возвращаем автообновления обратно в работу при любом выходе
+    if systemctl is-enabled --quiet unattended-upgrades 2>/dev/null; then
+        systemctl start unattended-upgrades >> "$LOG_FILE" 2>&1 || true
+    fi
     if [[ "$exit_code" -ne 0 ]]; then
         echo -e "\n${RED}[FAIL] Скрипт аварийно завершился на строке ${line_no} с кодом ошибки ${exit_code}.${NC}"
         echo -e "${YELLOW}Полный лог ошибки доступен в файле: ${LOG_FILE}${NC}"
@@ -77,18 +81,28 @@ is_done() {
 }
 
 wait_for_apt_locks() {
-    log_step "Проверка фоновых процессов обновления (apt/dpkg/dnf/yum)..."
+    log_step "Управление блокировками менеджера пакетов (apt/dpkg)..."
+    
+    # 1. Если активна служба автоматических фоновых обновлений Ubuntu, 
+    # временно останавливаем её для мгновенной установки
+    if systemctl is-active --quiet unattended-upgrades 2>/dev/null; then
+        log_info "Фоновое обновление (unattended-upgrades) активно. Временно останавливаем его..."
+        systemctl stop unattended-upgrades >> "$LOG_FILE" 2>&1 || true
+    fi
+
+    # 2. Ждем, если какие-то низкоуровневые процессы apt-get/dpkg/dnf/yum всё ещё завершают работу
     local i=0
-    # Ждем, пока другие процессы менеджеров пакетов завершат свою работу
-    while pgrep -f "apt|dpkg|unattended-upgrades|dnf|yum" >/dev/null 2>&1; do
-        log_info "Обнаружен фоновый процесс обновления. Ожидаем освобождения менеджера пакетов..."
-        sleep 5
-        i=$((i+5))
-        if [[ "$i" -gt 300 ]]; then
-            log_fail "Фоновые процессы обновления заблокировали систему. Пожалуйста, перезапустите скрипт позже."
+    while pgrep -f "apt-get|dpkg|dnf|yum" >/dev/null 2>&1; do
+        log_info "Процесс установки пакетов занят. Ожидаем завершения..."
+        sleep 3
+        i=$((i+3))
+        if [[ "$i" -gt 60 ]]; then
+            log_fail "Менеджер пакетов заблокирован сторонним процессом слишком долго. Пожалуйста, перезапустите скрипт позже."
             return 1
         fi
     done
+    
+    log_ok "Менеджер пакетов свободен."
     return 0
 }
 
