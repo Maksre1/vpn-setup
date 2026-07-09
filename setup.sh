@@ -14,15 +14,14 @@ set -euo pipefail
 cleanup_err() {
     local exit_code=$?
     local line_no=$1
-    # Возвращаем автообновления обратно в работу при любом выходе
     if systemctl is-enabled --quiet unattended-upgrades 2>/dev/null; then
         systemctl start unattended-upgrades >> "$LOG_FILE" 2>&1 || true
     fi
     if [[ "$exit_code" -ne 0 ]]; then
-        echo -e "\n${RED}[FAIL] Скрипт аварийно завершился на строке ${line_no} с кодом ошибки ${exit_code}.${NC}"
-        echo -e "${YELLOW}Полный лог ошибки доступен в файле: ${LOG_FILE}${NC}"
-        echo -e "${YELLOW}Вы можете просмотреть последние 20 строк лога командой:${NC}"
-        echo -e "${BOLD}tail -n 20 ${LOG_FILE}${NC}\n"
+        printf "\n\n  ${RED}✗${NC}  Скрипт прервался на строке %s (код: %s)\n" "$line_no" "$exit_code"
+        printf "  Последние записи из лога:\n"
+        tail -n 6 "$LOG_FILE" 2>/dev/null | sed 's/^/    /'
+        printf "  Полный лог: ${BOLD}%s${NC}\n\n" "$LOG_FILE"
     fi
 }
 trap 'cleanup_err $LINENO' EXIT
@@ -41,6 +40,40 @@ SSH_PORT="${SSH_PORT:-22}"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
+# ── Прогресс-дисплей ────────────────────────────────────────────────────────
+
+STEPS_TOTAL=10
+STEP_INDEX=0
+STEP_NAME=""
+STEP_START_SEC=0
+SETUP_START_SEC=0
+
+_fmt_elapsed() {
+    local secs=$(( $(date +%s) - $1 ))
+    if [[ $secs -lt 60 ]]; then printf '%dс'   "$secs"
+    else printf '%dм %dс' $(( secs / 60 )) $(( secs % 60 )); fi
+}
+
+step_begin() {
+    STEP_INDEX=$(( STEP_INDEX + 1 ))
+    STEP_NAME="$1"
+    STEP_START_SEC=$(date +%s)
+    printf "  ${CYAN}⧗${NC}  %-38s\r" "${STEP_NAME}..."
+}
+
+step_finish() {
+    local t; t=$(_fmt_elapsed "$STEP_START_SEC")
+    printf "  ${GREEN}✓${NC}  %-38s  ${GREEN}%s${NC}\n" "$STEP_NAME" "$t"
+}
+
+step_skip() {
+    printf "  ${CYAN}✓${NC}  %-38s  ${CYAN}cached${NC}\n" "$STEP_NAME"
+}
+
+step_warn() {
+    printf "  ${YELLOW}!${NC}  %-38s  ${YELLOW}%s${NC}\n" "$STEP_NAME" "${1:-пропущен}"
+}
+
 # =============================================================================
 # Вспомогательные функции логирования и детекции ОС
 # =============================================================================
@@ -48,28 +81,26 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 init_log() {
     mkdir -p "$(dirname "$LOG_FILE")"
     touch "$LOG_FILE"
-    echo "" >> "$LOG_FILE"
-    echo "======================================" >> "$LOG_FILE"
-    echo "Запуск setup.sh: $(date '+%Y-%m-%d %H:%M:%S')" >> "$LOG_FILE"
-    echo "======================================" >> "$LOG_FILE"
+    {
+        echo ""
+        echo "======================================"
+        echo "Запуск setup.sh: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "======================================"
+    } >> "$LOG_FILE"
+    SETUP_START_SEC=$(date +%s)
+    printf "\n  ${BOLD}${CYAN}VPN Server Auto-Setup${NC}\n"
+    printf "  %s\n\n" "──────────────────────────────────────────────────────────"
 }
 
-log() {
-    local msg="$1"
-    echo -e "$msg" | tee -a "$LOG_FILE"
+log()         { echo -e "$1" >> "$LOG_FILE"; }
+log_section() { echo -e "\n=== $1 ===" >> "$LOG_FILE"; }
+log_step()    { echo -e "  ▶ $1" >> "$LOG_FILE"; }
+log_ok()      { echo -e "  [OK] $1" >> "$LOG_FILE"; }
+log_info()    { echo -e "      $1" >> "$LOG_FILE"; }
+log_fail()    {
+    echo -e "  [FAIL] $1" >> "$LOG_FILE"
+    printf "\n\n  ${RED}✗${NC}  %s\n" "$1"
 }
-
-log_section() {
-    log ""
-    log "${CYAN}${BOLD}══════════════════════════════════════════${NC}"
-    log "${CYAN}${BOLD}  $1${NC}"
-    log "${CYAN}${BOLD}══════════════════════════════════════════${NC}"
-}
-
-log_step() { log "${YELLOW}  ▶ $1${NC}"; }
-log_ok() { log "${GREEN}  [OK]${NC} $1"; }
-log_fail() { log "${RED}  [FAIL]${NC} $1"; }
-log_info() { log "        $1"; }
 
 mark_done() {
     mkdir -p "$STATE_DIR"
@@ -175,10 +206,9 @@ check_os() {
 # Новая функция: Настройка DNS
 # =============================================================================
 setup_dns() {
-    log_section "Настройка DNS серверов"
+    step_begin "DNS (настройка 1.1.1.1 / 8.8.8.8)"
     if is_done "setup_dns"; then
-        log_ok "DNS уже настроен."
-        return 0
+        step_skip; return 0
     fi
 
     log_step "Установка DNS-серверов Cloudflare и Google..."
@@ -212,17 +242,16 @@ EOF
     log_ok "/etc/resolv.conf обновлен"
 
     mark_done "setup_dns"
-    log_ok "Шаг настройки DNS завершен."
+    step_finish
 }
 
 # =============================================================================
 # Новая функция: Синхронизация времени
 # =============================================================================
 sync_time() {
-    log_section "Синхронизация времени сервера"
+    step_begin "Синхронизация времени (UTC + chrony)"
     if is_done "sync_time"; then
-        log_ok "Время уже синхронизировано."
-        return 0
+        step_skip; return 0
     fi
 
     log_step "Установка часового пояса UTC..."
@@ -250,18 +279,17 @@ sync_time() {
 
     log_info "Текущее время сервера: $(date)"
     mark_done "sync_time"
-    log_ok "Шаг синхронизации времени завершен."
+    step_finish
 }
 
 # =============================================================================
 # 1. update_system
 # =============================================================================
 update_system() {
-    log_section "1. Обновление системы и установка базовых утилит"
+    step_begin "Обновление системы и пакетов"
 
     if is_done "update_system"; then
-        log_ok "Шаг уже выполнен, пропускаем."
-        return 0
+        step_skip; return 0
     fi
 
     if [[ "$PKG_MANAGER" == "apt" ]]; then
@@ -283,18 +311,17 @@ update_system() {
     fi
 
     mark_done "update_system"
-    log_ok "Шаг 1 завершён."
+    step_finish
 }
 
 # =============================================================================
 # 2. setup_firewall
 # =============================================================================
 setup_firewall() {
-    log_section "2. Настройка брандмауэра (ufw)"
+    step_begin "Брандмауэр (UFW)"
 
     if is_done "setup_firewall"; then
-        log_ok "Шаг уже выполнен, пропускаем."
-        return 0
+        step_skip; return 0
     fi
 
     log_step "Сброс ufw в начальное состояние..."
@@ -314,14 +341,14 @@ setup_firewall() {
     ufw reload >> "$LOG_FILE" 2>&1
 
     mark_done "setup_firewall"
-    log_ok "Шаг 2 завершён."
+    step_finish
 }
 
 # =============================================================================
 # 3. detect_system_specs
 # =============================================================================
 detect_system_specs() {
-    log_section "3. Определение характеристик сервера"
+    step_begin "Характеристики сервера"
 
     RAM_MB=$(grep MemTotal /proc/meminfo | awk '{print int($2/1024)}')
     log_step "RAM: ${RAM_MB} МБ"
@@ -382,19 +409,17 @@ detect_system_specs() {
     fi
 
     export BBR_AVAILABLE RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM NETDEV_MAX_BACKLOG SOMAXCONN TCP_MAX_SYN_BACKLOG NET_IFACE
-    log_ok "Профиль буферов: $BUF_TIER"
-    log_ok "Шаг 3 завершён."
+    step_finish
 }
 
 # =============================================================================
 # 4. tune_network
 # =============================================================================
 tune_network() {
-    log_section "4. Настройка сетевых параметров ядра"
+    step_begin "Параметры сети (sysctl + BBR + IPv6-off)"
 
     if is_done "tune_network"; then
-        log_ok "Шаг уже выполнен, пропускаем."
-        return 0
+        step_skip; return 0
     fi
 
     cat > /etc/sysctl.d/99-vpn-tuning.conf <<EOF
@@ -430,19 +455,18 @@ EOF
     fi
 
     mark_done "tune_network"
-    log_ok "Шаг 4 завершён."
+    step_finish
 }
 
 # =============================================================================
 # 5. install_mieru
 # =============================================================================
 install_mieru() {
-    log_section "5. Установка Mieru (mita — серверный компонент)"
+    step_begin "Mieru (mita)"
 
     if is_done "install_mieru"; then
-        log_ok "Шаг уже выполнен, пропускаем."
+        step_skip
         if [[ -f "$STATE_DIR/mieru.env" ]]; then
-            # shellcheck source=/dev/null
             source "$STATE_DIR/mieru.env"
         fi
         return 0
@@ -576,19 +600,18 @@ EOF
     chmod 600 "$STATE_DIR/mieru.env"
 
     mark_done "install_mieru"
-    log_ok "Шаг 5 завершён."
+    step_finish
 }
 
 # =============================================================================
 # 6. install_hysteria2
 # =============================================================================
 install_hysteria2() {
-    log_section "6. Установка Hysteria2"
+    step_begin "Hysteria2"
 
     if is_done "install_hysteria2"; then
-        log_ok "Шаг уже выполнен, пропускаем."
+        step_skip
         if [[ -f "$STATE_DIR/hysteria2.env" ]]; then
-            # shellcheck source=/dev/null
             source "$STATE_DIR/hysteria2.env"
         fi
         return 0
@@ -710,18 +733,17 @@ EOF
     chmod 600 "$STATE_DIR/hysteria2.env"
 
     mark_done "install_hysteria2"
-    log_ok "Шаг 6 завершён."
+    step_finish
 }
 
 # =============================================================================
 # 7. setup_warp
 # =============================================================================
 setup_warp() {
-    log_section "7. Настройка Cloudflare WARP (wgcf)"
+    step_begin "Cloudflare WARP"
 
     if is_done "setup_warp"; then
-        log_ok "Шаг уже выполнен, пропускаем."
-        return 0
+        step_skip; return 0
     fi
 
     # Загружаем порты из файлов состояния, если они есть
@@ -741,6 +763,7 @@ setup_warp() {
         aarch64)  deb_arch="arm64" ;;
         *)
             log_fail "Неподдерживаемая архитектура для wgcf: $wgcf_arch"
+            step_warn "не поддерживается на $wgcf_arch"
             return 0
             ;;
     esac
@@ -765,6 +788,7 @@ setup_warp() {
             log_fail "Не удалось скачать wgcf с GitHub (таймаут соединения)."
             log_info "Ссылка: $wgcf_url"
             log_info "Пропуск настройки WARP. VPN будет работать напрямую без WARP."
+            step_warn "недоступен GitHub"
             return 0
         fi
     else
@@ -782,6 +806,7 @@ setup_warp() {
         else
             log_fail "Регистрация WARP не удалась (Cloudflare API заблокировано или перегружено)."
             log_info "Пропуск настройки WARP. VPN будет работать напрямую без WARP."
+            step_warn "Cloudflare API недоступен"
             return 0
         fi
     else
@@ -795,6 +820,7 @@ setup_warp() {
         else
             log_fail "Не удалось сгенерировать wgcf профиль."
             log_info "Пропуск настройки WARP. VPN будет работать напрямую без WARP."
+            step_warn "ошибка генерации профиля"
             return 0
         fi
     else
@@ -823,6 +849,7 @@ setup_warp() {
         else
             log_fail "Не удалось поднять wgcf-warp. Возможна LXC/OpenVZ виртуализация без поддержки WireGuard."
             log_info "Пропуск настройки WARP. VPN будет работать напрямую без WARP."
+            step_warn "WireGuard не поддерживается"
             return 0
         fi
     fi
@@ -1003,18 +1030,17 @@ EOF
     systemctl start warp-routing >> "$LOG_FILE" 2>&1 || true
 
     mark_done "setup_warp"
-    log_ok "Шаг 7 завершён."
+    step_finish
 }
 
 # =============================================================================
 # 7.5. setup_subscription_server
 # =============================================================================
 setup_subscription_server() {
-    log_section "7.5. Настройка веб-сервера подписки (vpn-sub)"
+    step_begin "Сервер подписок (:8080)"
 
     if is_done "setup_sub_server"; then
-        log_ok "Шаг уже выполнен, пропускаем."
-        return 0
+        step_skip; return 0
     fi
 
     log_step "Создание каталога веб-сервера..."
@@ -1054,7 +1080,7 @@ EOF
     ufw allow 8080/tcp comment "VPN subscription port" >> "$LOG_FILE" 2>&1
 
     mark_done "setup_sub_server"
-    log_ok "Шаг 7.5 завершён."
+    step_finish
 }
 
 # =============================================================================
@@ -1063,14 +1089,8 @@ EOF
 print_summary() {
     log_section "8. Итоговая информация для подключения"
 
-    if [[ -f "$STATE_DIR/mieru.env" ]]; then
-        # shellcheck source=/dev/null
-        source "$STATE_DIR/mieru.env"
-    fi
-    if [[ -f "$STATE_DIR/hysteria2.env" ]]; then
-        # shellcheck source=/dev/null
-        source "$STATE_DIR/hysteria2.env"
-    fi
+    if [[ -f "$STATE_DIR/mieru.env" ]]; then source "$STATE_DIR/mieru.env"; fi
+    if [[ -f "$STATE_DIR/hysteria2.env" ]]; then source "$STATE_DIR/hysteria2.env"; fi
 
     local server_ip
     server_ip=$(get_server_ip)
@@ -1078,16 +1098,14 @@ print_summary() {
     local warp_status="не активен"
     if wg show wgcf-warp &>/dev/null 2>&1; then warp_status="активен"; fi
 
+    # Генерация Base64-подписки
     local sub_content=""
-    if [[ -n "${H2_URI:-}" ]]; then
-        sub_content+="${H2_URI}"$'\n'
-    fi
-    if [[ -n "${MIERU_URI:-}" ]]; then
-        sub_content+="${MIERU_URI}"$'\n'
-    fi
-    local sub_base64=""
+    [[ -n "${H2_URI:-}" ]]    && sub_content+="${H2_URI}"$'\n'
+    [[ -n "${MIERU_URI:-}" ]] && sub_content+="${MIERU_URI}"$'\n'
+    local sub_base64
     sub_base64=$(echo -n "$sub_content" | base64 | tr -d '\r\n')
 
+    # Сохраняем подписки на диске
     echo -n "$sub_base64" > /root/vpn-setup-sub.txt
     chmod 600 /root/vpn-setup-sub.txt
 
@@ -1095,18 +1113,14 @@ print_summary() {
     echo -n "$sub_base64" > /var/www/html/sub.txt
     chmod 644 /var/www/html/sub.txt
 
-    # Создаем singbox.json
+    # singbox.json
     cat > /var/www/html/singbox.json <<JSON
 {
   "outbounds": [
     {
       "type": "selector",
       "tag": "PROXY",
-      "outbounds": [
-        "Hysteria2-Proxy",
-        "Mieru-Proxy",
-        "direct"
-      ]
+      "outbounds": ["Hysteria2-Proxy", "Mieru-Proxy", "direct"]
     },
     {
       "type": "hysteria2",
@@ -1114,17 +1128,12 @@ print_summary() {
       "server": "${server_ip}",
       "server_port": ${H2_PORT:-443},
       "password": "${H2_PASS:-}",
-      "obfs": {
-        "type": "salamander",
-        "password": "${H2_OBFS_PASS:-}"
-      },
+      "obfs": { "type": "salamander", "password": "${H2_OBFS_PASS:-}" },
       "tls": {
         "enabled": true,
         "server_name": "${H2_CERT_CN:-mail.example.com}",
         "insecure": false,
-        "pinned_peer_cert_sha256": [
-          "${H2_CERT_PIN:-}"
-        ]
+        "pinned_peer_cert_sha256": ["${H2_CERT_PIN:-}"]
       }
     },
     {
@@ -1136,16 +1145,13 @@ print_summary() {
       "password": "${MIERU_PASS:-}",
       "transport": "TCP"
     },
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
+    { "type": "direct", "tag": "direct" }
   ]
 }
 JSON
     chmod 644 /var/www/html/singbox.json
 
-    # Создаем clash.yaml
+    # clash.yaml
     cat > /var/www/html/clash.yaml <<EOF
 mixed-port: 7892
 allow-lan: false
@@ -1186,88 +1192,48 @@ rules:
 EOF
     chmod 644 /var/www/html/clash.yaml
 
+    # Полный файл с креденциалами (для домашнего хранения)
     cat > "$INFO_FILE" <<EOF
 ================================================================================
-  VPN Server Setup — Информация для подключения
-  Сервер IP: ${server_ip}
-  Ссылка для Karing/Sing-box (JSON):  http://${server_ip}:8080/singbox.json
-  Ссылка для Clash/Mihomo (YAML):     http://${server_ip}:8080/clash.yaml
+  VPN Server Setup — полные креденциалы
+  IP: ${server_ip}   |   WARP: ${warp_status}
 ================================================================================
 
-  [0] ЕДИНАЯ ПОДПИСКА (Sub / V2ray Base64 format)
-  Скопируйте этот блок в файл или загрузите на хостинг для раздачи подписки:
-  ----------------------------------------------------------------------
-  ${sub_base64}
-  ----------------------------------------------------------------------
+  MIERU  |  порт: ${MIERU_PORT:-?}  |  пользователь: ${MIERU_USER:-?}  |  пароль: ${MIERU_PASS:-?}
+  URI:   ${MIERU_URI:-не сгенерирована}
 
-  [1] MIERU (mita)
-  TCP порт:    ${MIERU_PORT:-НЕ ОПРЕДЕЛЁН}
-  Пользователь: ${MIERU_USER:-НЕ ОПРЕДЕЛЁН}
-  Пароль:      ${MIERU_PASS:-НЕ ОПРЕДЕЛЁН}
+  HYSTERIA2  |  порт: ${H2_PORT:-?}  |  пароль: ${H2_PASS:-?}
+  OBFS пароль: ${H2_OBFS_PASS:-?}  |  TLS CN: ${H2_CERT_CN:-?}
+  URI:   ${H2_URI:-не сгенерирована}
 
-  Ссылка для Karing / других клиентов (Mieru URI):
-  ${MIERU_URI:-не сгенерирована}
-
-  Конфиг клиента Mieru JSON:
-  {
-    "profile": [
-      {
-        "profileName": "my-server",
-        "user": { "name": "${MIERU_USER:-USER}", "password": "${MIERU_PASS:-PASS}" },
-        "servers": [
-          { "ipAddress": "${server_ip}", "portBindings": [ { "port": ${MIERU_PORT:-PORT}, "protocol": "TCP" } ] }
-        ]
-      }
-    ],
-    "rpcPort": 8964
-  }
-
-  Конфиг Mieru для Clash / Mihomo (YAML — скопируйте как новый профиль):
-  ----------------------------------------------------------------------
-  mixed-port: 7892
-  allow-lan: false
-  mode: rule
-  log-level: info
-  ipv6: false
-
-  proxies:
-    - name: Mieru-Proxy
-      type: mieru
-      server: ${server_ip}
-      port: ${MIERU_PORT:-PORT}
-      username: ${MIERU_USER:-USER}
-      password: ${MIERU_PASS:-PASS}
-      transport: TCP
-
-  proxy-groups:
-    - name: PROXY
-      type: select
-      proxies:
-        - Mieru-Proxy
-        - DIRECT
-
-  rules:
-    - MATCH, PROXY
-  ----------------------------------------------------------------------
-
-  [2] HYSTERIA2 (Salamander obfs + самоподписанный TLS)
-  UDP порт:    ${H2_PORT:-НЕ ОПРЕДЕЛЁН}
-  Пароль:      ${H2_PASS:-НЕ ОПРЕДЕЛЁН}
-  OBFS пароль: ${H2_OBFS_PASS:-НЕ ОПРЕДЕЛЁН}
-  TLS CN:      ${H2_CERT_CN:-НЕ ОПРЕДЕЛЁН}
-
-  Ссылка для клиента:
-  ${H2_URI:-не сгенерирована}
-
-  [3] CLOUDFLARE WARP
-  Статус:     ${warp_status}
+  MIERU JSON конфиг:
+  {"profile":[{"profileName":"my-server","user":{"name":"${MIERU_USER:-?}","password":"${MIERU_PASS:-?}"},"servers":[{"ipAddress":"${server_ip}","portBindings":[{"port":${MIERU_PORT:-0},"protocol":"TCP"}]}]}],"rpcPort":8964}
 
 ================================================================================
 EOF
     chmod 600 "$INFO_FILE"
-    echo ""
-    cat "$INFO_FILE"
-    log_ok "Сведения сохранены в $INFO_FILE"
+
+    # ──────────────────────────────────────────────────────────
+    # Чистый вывод в терминал: только ссылки
+    # ──────────────────────────────────────────────────────────
+    local t; t=$(_fmt_elapsed "$SETUP_START_SEC")
+
+    printf "\n  ${GREEN}✔${NC}  Настройка завершена за %s\n" "$t"
+    printf "  %s\n" "──────────────────────────────────────────────────────────"
+    printf "\n  ${BOLD}Ссылки для подключения:${NC}\n\n"
+
+    printf "  ${CYAN}Karing / Sing-box:${NC}\n"
+    printf "  → http://%s:8080/singbox.json\n\n" "$server_ip"
+
+    printf "  ${CYAN}Clash Verge / Mihomo:${NC}\n"
+    printf "  → http://%s:8080/clash.yaml\n\n" "$server_ip"
+
+    printf "  ${CYAN}V2Ray (единая подписка Base64):${NC}\n"
+    printf "  → http://%s:8080/sub.txt\n\n" "$server_ip"
+
+    printf "  %s\n" "──────────────────────────────────────────────────────────"
+    printf "  Полные креденциалы: ${BOLD}%s${NC}\n" "$INFO_FILE"
+    printf "  Лог установки:    ${BOLD}%s${NC}\n\n" "$LOG_FILE"
 }
 
 # =============================================================================
@@ -1275,8 +1241,6 @@ EOF
 # =============================================================================
 main() {
     init_log
-    log ""
-    log "${BOLD}${CYAN}=== VPN Server Auto-Setup ===${NC}"
     check_root
     check_os
 
@@ -1294,3 +1258,4 @@ main() {
 }
 
 main "$@"
+
