@@ -517,10 +517,15 @@ EOF
     ufw allow "$MIERU_PORT"/tcp comment "Mieru proxy" >> "$LOG_FILE" 2>&1
 
     mkdir -p "$STATE_DIR"
+    local server_ip
+    server_ip=$(get_server_ip)
+    local mieru_uri="mieru://${server_ip}:${MIERU_PORT}?username=${MIERU_USER}&password=${MIERU_PASS}&network=tcp#Mieru-Proxy"
+
     cat > "$STATE_DIR/mieru.env" <<EOF
 MIERU_PORT="${MIERU_PORT}"
 MIERU_USER="${MIERU_USER}"
 MIERU_PASS="${MIERU_PASS}"
+MIERU_URI="${mieru_uri}"
 MIERU_VERSION="${mita_version}"
 EOF
     chmod 600 "$STATE_DIR/mieru.env"
@@ -975,6 +980,9 @@ print_summary() {
   TCP порт:    ${MIERU_PORT:-НЕ ОПРЕДЕЛЁН}
   Пользователь: ${MIERU_USER:-НЕ ОПРЕДЕЛЁН}
   Пароль:      ${MIERU_PASS:-НЕ ОПРЕДЕЛЁН}
+
+  Ссылка для Karing / других клиентов (Mieru URI):
+  ${MIERU_URI:-не сгенерирована}
 
   Конфиг клиента Mieru JSON:
   {
