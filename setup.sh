@@ -886,6 +886,7 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload >> "$LOG_FILE" 2>&1
     systemctl enable warp-routing >> "$LOG_FILE" 2>&1 || true
+    systemctl start warp-routing >> "$LOG_FILE" 2>&1 || true
 
     mark_done "setup_warp"
     log_ok "Шаг 7 завершён."
