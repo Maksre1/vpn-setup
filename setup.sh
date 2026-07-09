@@ -794,9 +794,7 @@ EOF
         iptables -t mangle -A OUTPUT -m owner --uid-owner "$hysteria_uid" -j MARK --set-mark 0x1
     fi
 
-    if ! ip rule show 2>/dev/null | grep -q "fwmark 0x1 lookup 200"; then
-        ip rule add fwmark 0x1 table 200 priority 100
-    fi
+    ip rule add fwmark 0x1 table 200 priority 100 2>/dev/null || true
 
     # Включаем маскарадинг в NAT
     iptables -t nat -D POSTROUTING -o wgcf-warp -j MASQUERADE 2>/dev/null || true
