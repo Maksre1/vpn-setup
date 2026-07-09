@@ -684,6 +684,7 @@ setup_warp() {
     local wg_conf_dst="/etc/wireguard/wgcf-warp.conf"
     cp "$wg_conf_src" "$wg_conf_dst"
     sed -i '/^DNS =/d' "$wg_conf_dst"
+    sed -i '/^\[Interface\]/a Table = off' "$wg_conf_dst"
     sed -i 's|AllowedIPs = 0\.0\.0\.0/0|AllowedIPs = 0.0.0.0/1, 128.0.0.0/1|g' "$wg_conf_dst"
     sed -i 's|AllowedIPs = ::/0||g' "$wg_conf_dst"
     sed -i '/^PostUp/d'   "$wg_conf_dst"
