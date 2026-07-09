@@ -1115,11 +1115,52 @@ print_summary() {
 JSON
     chmod 644 /var/www/html/singbox.json
 
+    # Создаем clash.yaml
+    cat > /var/www/html/clash.yaml <<EOF
+mixed-port: 7892
+allow-lan: false
+mode: rule
+log-level: info
+ipv6: false
+
+proxies:
+  - name: Hysteria2-Proxy
+    type: hysteria2
+    server: ${server_ip}
+    port: ${H2_PORT:-443}
+    password: ${H2_PASS:-}
+    obfs: salamander
+    obfs-password: ${H2_OBFS_PASS:-}
+    sni: ${H2_CERT_CN:-mail.example.com}
+    pinned-peer-cert-sha256: ${H2_CERT_PIN:-}
+
+  - name: Mieru-Proxy
+    type: mieru
+    server: ${server_ip}
+    port: ${MIERU_PORT:-443}
+    username: ${MIERU_USER:-}
+    password: ${MIERU_PASS:-}
+    transport: TCP
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - Hysteria2-Proxy
+      - Mieru-Proxy
+      - DIRECT
+
+rules:
+  - MATCH, PROXY
+EOF
+    chmod 644 /var/www/html/clash.yaml
+
     cat > "$INFO_FILE" <<EOF
 ================================================================================
   VPN Server Setup — Информация для подключения
   Сервер IP: ${server_ip}
-  Ссылка для Karing/Sing-box (JSON): http://${server_ip}:8080/singbox.json
+  Ссылка для Karing/Sing-box (JSON):  http://${server_ip}:8080/singbox.json
+  Ссылка для Clash/Mihomo (YAML):     http://${server_ip}:8080/clash.yaml
 ================================================================================
 
   [0] ЕДИНАЯ ПОДПИСКА (Sub / V2ray Base64 format)
