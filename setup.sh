@@ -19,19 +19,16 @@ cleanup_err() {
     local exit_code=$?
     local line_no=$1
     if systemctl is-enabled --quiet unattended-upgrades 2>/dev/null; then
-        systemctl start unattended-upgrades >> "$LOG_FILE" 2>&1 || true
+        systemctl start unattended-upgrades 2>/dev/null || true
     fi
     if [[ "$exit_code" -ne 0 ]]; then
         printf "\n\n  ${RED}✗${NC}  Скрипт прервался на строке %s (код: %s)\n" "$line_no" "$exit_code"
-        printf "  Последние записи из лога:\n"
-        tail -n 6 "$LOG_FILE" 2>/dev/null | sed 's/^/    /'
-        printf "  Полный лог: ${BOLD}%s${NC}\n\n" "$LOG_FILE"
     fi
 }
 trap 'cleanup_err $LINENO' EXIT
 
 # ── Глобальные переменные ────────────────────────────────────────────────────
-readonly LOG_FILE="/var/log/vpn-setup.log"
+readonly LOG_FILE="/dev/null"
 readonly STATE_DIR="/etc/vpn-setup-state"
 readonly MIERU_CONFIG_DIR="/etc/mita"
 readonly H2_CONFIG_DIR="/etc/hysteria"
@@ -82,26 +79,17 @@ step_warn() {
 # =============================================================================
 
 init_log() {
-    mkdir -p "$(dirname "$LOG_FILE")"
-    touch "$LOG_FILE"
-    {
-        echo ""
-        echo "======================================"
-        echo "Запуск setup.sh: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "======================================"
-    } >> "$LOG_FILE"
     SETUP_START_SEC=$(date +%s)
     printf "\n  ${BOLD}${CYAN}VPN Server Auto-Setup${NC}\n"
     printf "  %s\n\n" "──────────────────────────────────────────────────────────"
 }
 
-log()         { echo -e "$1" >> "$LOG_FILE"; }
-log_section() { echo -e "\n=== $1 ===" >> "$LOG_FILE"; }
-log_step()    { echo -e "  ▶ $1" >> "$LOG_FILE"; }
-log_ok()      { echo -e "  [OK] $1" >> "$LOG_FILE"; }
-log_info()    { echo -e "      $1" >> "$LOG_FILE"; }
+log()         { :; }
+log_section() { :; }
+log_step()    { :; }
+log_ok()      { :; }
+log_info()    { :; }
 log_fail()    {
-    echo -e "  [FAIL] $1" >> "$LOG_FILE"
     printf "\n\n  ${RED}✗${NC}  %s\n" "$1"
 }
 
@@ -390,7 +378,8 @@ detect_system_specs() {
         NETDEV_MAX_BACKLOG=2000
         SOMAXCONN=512
         TCP_MAX_SYN_BACKLOG=512
-        BUF_TIER="консервативный (RAM < 1 ГБ)"
+        QUIC_STREAM_BUF=4194304
+        QUIC_CONN_BUF=8388608
     elif [[ $RAM_MB -lt 4096 ]]; then
         RMEM_MAX=$((16 * 1024 * 1024))
         WMEM_MAX=$((16 * 1024 * 1024))
@@ -399,7 +388,8 @@ detect_system_specs() {
         NETDEV_MAX_BACKLOG=5000
         SOMAXCONN=1024
         TCP_MAX_SYN_BACKLOG=1024
-        BUF_TIER="средний (RAM 1-4 ГБ)"
+        QUIC_STREAM_BUF=8388608
+        QUIC_CONN_BUF=20971520
     else
         RMEM_MAX=$((32 * 1024 * 1024))
         WMEM_MAX=$((32 * 1024 * 1024))
@@ -408,10 +398,11 @@ detect_system_specs() {
         NETDEV_MAX_BACKLOG=5000
         SOMAXCONN=2048
         TCP_MAX_SYN_BACKLOG=2048
-        BUF_TIER="агрессивный (RAM >= 4 ГБ)"
+        QUIC_STREAM_BUF=16777216
+        QUIC_CONN_BUF=41943040
     fi
 
-    export BBR_AVAILABLE RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM NETDEV_MAX_BACKLOG SOMAXCONN TCP_MAX_SYN_BACKLOG NET_IFACE
+    export BBR_AVAILABLE RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM NETDEV_MAX_BACKLOG SOMAXCONN TCP_MAX_SYN_BACKLOG NET_IFACE QUIC_STREAM_BUF QUIC_CONN_BUF
     step_finish
 }
 
@@ -555,6 +546,7 @@ install_mieru() {
     rm -f "$tmp_file"
 
     MIERU_PORT=$(find_free_port tcp 20000 50000)
+    MIERU_UDP_PORT=$(find_free_port udp 20000 50000)
     MIERU_USER="user_$(openssl rand -hex 4)"
     MIERU_PASS=$(openssl rand -base64 22 | tr -d '/+=' | head -c 24)
 
@@ -565,6 +557,10 @@ install_mieru() {
         {
             "port": ${MIERU_PORT},
             "protocol": "TCP"
+        },
+        {
+            "port": ${MIERU_UDP_PORT},
+            "protocol": "UDP"
         }
     ],
     "users": [
@@ -573,7 +569,7 @@ install_mieru() {
             "password": "${MIERU_PASS}"
         }
     ],
-    "loggingLevel": "INFO",
+    "loggingLevel": "WARN",
     "mtu": 1400
 }
 EOF
@@ -586,15 +582,17 @@ EOF
     rm -f "$mita_config_file"
 
     systemctl restart mita >> "$LOG_FILE" 2>&1 || true
-    ufw allow "$MIERU_PORT"/tcp comment "Mieru proxy" >> "$LOG_FILE" 2>&1
+    ufw allow "$MIERU_PORT"/tcp comment "Mieru TCP" >> "$LOG_FILE" 2>&1
+    ufw allow "$MIERU_UDP_PORT"/udp comment "Mieru UDP" >> "$LOG_FILE" 2>&1
 
     mkdir -p "$STATE_DIR"
     local server_ip
     server_ip=$(get_server_ip)
-    local mieru_uri="mieru://${server_ip}:${MIERU_PORT}?username=${MIERU_USER}&password=${MIERU_PASS}&network=tcp#Mieru-Proxy"
+    local mieru_uri="mieru://${server_ip}:${MIERU_PORT}?username=${MIERU_USER}&password=${MIERU_PASS}&network=udp#Mieru-Proxy"
 
     cat > "$STATE_DIR/mieru.env" <<EOF
 MIERU_PORT="${MIERU_PORT}"
+MIERU_UDP_PORT="${MIERU_UDP_PORT}"
 MIERU_USER="${MIERU_USER}"
 MIERU_PASS="${MIERU_PASS}"
 MIERU_URI="${mieru_uri}"
@@ -637,12 +635,15 @@ install_hysteria2() {
     local cn_index=$(( RANDOM % ${#cn_candidates[@]} ))
     H2_CERT_CN="${cn_candidates[$cn_index]}"
 
-    openssl req -x509 -newkey rsa:2048 \
-        -keyout "$H2_CERT_DIR/server.key" \
-        -out    "$H2_CERT_DIR/server.crt" \
-        -days   3650 \
+    # ECDSA вместо RSA — быстрее handshake, меньше CPU
+    openssl ecparam -genkey -name prime256v1 \
+        -out "$H2_CERT_DIR/server.key" 2>/dev/null
+    openssl req -new -x509 \
+        -key "$H2_CERT_DIR/server.key" \
+        -out "$H2_CERT_DIR/server.crt" \
+        -days 3650 \
         -nodes \
-        -subj   "/CN=${H2_CERT_CN}/O=Example/C=US" \
+        -subj "/CN=${H2_CERT_CN}/O=Example/C=US" \
         >> "$LOG_FILE" 2>&1
 
     chmod 600 "$H2_CERT_DIR/server.key"
@@ -661,10 +662,10 @@ obfs:
   salamander:
     password: ${H2_OBFS_PASS}
 quic:
-  initStreamReceiveWindow: 8388608
-  maxStreamReceiveWindow: 8388608
-  initConnReceiveWindow: 20971520
-  maxConnReceiveWindow: 20971520
+  initStreamReceiveWindow: ${QUIC_STREAM_BUF}
+  maxStreamReceiveWindow: ${QUIC_STREAM_BUF}
+  initConnReceiveWindow: ${QUIC_CONN_BUF}
+  maxConnReceiveWindow: ${QUIC_CONN_BUF}
   maxIdleTimeout: 30s
   maxIncomingStreams: 1024
   disablePathMTUDiscovery: false
@@ -896,6 +897,9 @@ EOF
     if [[ -n "$MIERU_PORT" ]]; then
         iptables -t mangle -D OUTPUT -p tcp --sport "$MIERU_PORT" -j RETURN 2>/dev/null || true
     fi
+    if [[ -n "${MIERU_UDP_PORT:-}" ]]; then
+        iptables -t mangle -D OUTPUT -p udp --sport "$MIERU_UDP_PORT" -j RETURN 2>/dev/null || true
+    fi
     if [[ -n "$H2_PORT" ]]; then
         iptables -t mangle -D OUTPUT -p udp --sport "$H2_PORT" -j RETURN 2>/dev/null || true
     fi
@@ -919,6 +923,9 @@ EOF
     iptables -t mangle -A OUTPUT -p tcp --dport 53 -j RETURN
     if [[ -n "$MIERU_PORT" ]]; then
         iptables -t mangle -A OUTPUT -p tcp --sport "$MIERU_PORT" -j RETURN
+    fi
+    if [[ -n "${MIERU_UDP_PORT:-}" ]]; then
+        iptables -t mangle -A OUTPUT -p udp --sport "$MIERU_UDP_PORT" -j RETURN
     fi
     if [[ -n "$H2_PORT" ]]; then
         iptables -t mangle -A OUTPUT -p udp --sport "$H2_PORT" -j RETURN
@@ -987,6 +994,9 @@ fi
 if [ -n "$MIERU_PORT" ]; then
     iptables -t mangle -A OUTPUT -p tcp --sport "$MIERU_PORT" -j RETURN
 fi
+if [ -n "${MIERU_UDP_PORT:-}" ]; then
+    iptables -t mangle -A OUTPUT -p udp --sport "$MIERU_UDP_PORT" -j RETURN
+fi
 if [ -n "$endpoint_ip" ]; then
     if [[ "$endpoint_ip" =~ : ]]; then
         ip6tables -t mangle -A OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
@@ -1042,42 +1052,79 @@ EOF
 # 7.5. setup_subscription_server
 # =============================================================================
 setup_subscription_server() {
-    step_begin "Сервер подписок (:8080)"
+    step_begin "Сервер подписок (:8080 HTTPS)"
 
     if is_done "setup_sub_server"; then
         step_skip; return 0
     fi
 
-    # Загружаем ранее сгенерированный путь подписки (из setup_warp или глобальной переменной)
+    # Загружаем ранее сгенерированный путь подписки
     if [[ -f "$STATE_DIR/subscription_path" ]]; then
         source "$STATE_DIR/subscription_path"
     fi
-    # Сохраняем текущий путь (если state-файл ещё не создан)
     mkdir -p "$STATE_DIR"
     echo "SUB_PATH=\"${SUB_PATH}\"" > "$STATE_DIR/subscription_path"
     chmod 600 "$STATE_DIR/subscription_path"
 
-    log_step "Создание каталога веб-сервера..."
     mkdir -p /var/www/html
 
-    log_step "Настройка systemd службы vpn-sub..."
-    # Создаём непривилегированного пользователя для раздачи файлов подписки
     if ! id vpnsub &>/dev/null; then
         useradd -r -s /sbin/nologin -d /var/www/html vpnsub >> "$LOG_FILE" 2>&1 || true
     fi
     chown vpnsub:vpnsub /var/www/html || true
     chmod 755 /var/www/html || true
 
+    # Генерация самоподписанного ECDSA-сертификата для HTTPS
+    local sub_cert_dir="/etc/vpn-sub-certs"
+    mkdir -p "$sub_cert_dir"
+    if [[ ! -f "$sub_cert_dir/server.key" ]]; then
+        openssl ecparam -genkey -name prime256v1 \
+            -out "$sub_cert_dir/server.key" 2>/dev/null
+        openssl req -new -x509 \
+            -key "$sub_cert_dir/server.key" \
+            -out "$sub_cert_dir/server.crt" \
+            -days 3650 \
+            -nodes \
+            -subj "/CN=vpn-sub/O=VPN/C=US" 2>/dev/null
+    fi
+    chmod 600 "$sub_cert_dir/server.key"
+    chmod 644 "$sub_cert_dir/server.crt"
+    chown vpnsub:vpnsub "$sub_cert_dir/server.key" "$sub_cert_dir/server.crt" 2>/dev/null || true
+
+    # Python HTTPS-сервер
+    cat > /var/www/html/https_server.py <<'PYEOF'
+import http.server, ssl, os, signal, sys
+
+CERT = "/etc/vpn-sub-certs/server.crt"
+KEY  = "/etc/vpn-sub-certs/server.key"
+PORT = 8080
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
+
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain(CERT, KEY)
+
+httpd = http.server.HTTPServer(("0.0.0.0", PORT), Handler)
+httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+httpd.serve_forever()
+PYEOF
+    chmod 644 /var/www/html/https_server.py
+    chown vpnsub:vpnsub /var/www/html/https_server.py
+
     cat > /etc/systemd/system/vpn-sub.service <<EOF
 [Unit]
-Description=VPN Subscription Web Server
+Description=VPN Subscription HTTPS Server
 After=network.target
 
 [Service]
 Type=simple
 User=vpnsub
 WorkingDirectory=/var/www/html
-ExecStart=/usr/bin/python3 -m http.server 8080
+ExecStart=/usr/bin/python3 /var/www/html/https_server.py
 Restart=always
 RestartSec=3s
 
@@ -1085,13 +1132,11 @@ RestartSec=3s
 WantedBy=multi-user.target
 EOF
 
-    log_step "Перезапуск службы vpn-sub..."
     systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
     systemctl enable vpn-sub >> "$LOG_FILE" 2>&1 || true
     systemctl restart vpn-sub >> "$LOG_FILE" 2>&1 || true
 
-    log_step "Настройка брандмауэра для порта 8080..."
-    ufw allow 8080/tcp comment "VPN subscription port" >> "$LOG_FILE" 2>&1
+    ufw allow 8080/tcp comment "VPN subscription HTTPS" >> "$LOG_FILE" 2>&1
 
     mark_done "setup_sub_server"
     step_finish
@@ -1238,23 +1283,325 @@ EOF
     printf "\n  ${BOLD}Ссылки для подключения:${NC}\n\n"
 
     printf "  ${CYAN}Karing / Sing-box:${NC}\n"
-    printf "  → http://%s:8080/singbox.json\n\n" "$server_ip"
+    printf "  → https://%s:8080/singbox.json\n\n" "$server_ip"
 
     printf "  ${CYAN}Clash Verge / Mihomo:${NC}\n"
-    printf "  → http://%s:8080/clash.yaml\n\n" "$server_ip"
+    printf "  → https://%s:8080/clash.yaml\n\n" "$server_ip"
 
     printf "  ${CYAN}V2Ray (единая подписка Base64):${NC}\n"
-    printf "  → http://%s:8080/%s\n\n" "$server_ip" "$SUB_PATH"
+    printf "  → https://%s:8080/%s\n\n" "$server_ip" "$SUB_PATH"
 
     printf "  %s\n" "──────────────────────────────────────────────────────────"
-    printf "  Полные креденциалы: ${BOLD}%s${NC}\n" "$INFO_FILE"
-    printf "  Лог установки:    ${BOLD}%s${NC}\n\n" "$LOG_FILE"
+    printf "  Полные креденциалы: ${BOLD}%s${NC}\n\n" "$INFO_FILE"
+}
+
+# =============================================================================
+# UNINSTALL
+# =============================================================================
+do_uninstall() {
+    printf "\n  ${RED}✗${NC}  Удаление VPN-сервера...\n\n"
+
+    systemctl stop hysteria-server 2>/dev/null || true
+    systemctl disable hysteria-server 2>/dev/null || true
+    systemctl stop mita 2>/dev/null || true
+    systemctl disable mita 2>/dev/null || true
+    systemctl stop vpn-sub 2>/dev/null || true
+    systemctl disable vpn-sub 2>/dev/null || true
+    systemctl stop warp-routing 2>/dev/null || true
+    systemctl disable warp-routing 2>/dev/null || true
+    systemctl stop "wg-quick@wgcf-warp" 2>/dev/null || true
+    systemctl disable "wg-quick@wgcf-warp" 2>/dev/null || true
+
+    # Удаляем systemd-юниты
+    rm -f /etc/systemd/system/hysteria-server.service
+    rm -f /etc/systemd/system/vpn-sub.service
+    rm -f /etc/systemd/system/warp-routing.service
+    rm -f /etc/network/if-up.d/warp-routing
+
+    # Удаляем конфиги и данные
+    rm -rf /etc/hysteria
+    rm -rf /etc/mita
+    rm -rf /etc/wgcf
+    rm -rf /etc/wireguard/wgcf-warp.conf
+    rm -rf /etc/vpn-setup-state
+    rm -rf /etc/vpn-sub-certs
+    rm -rf /var/www/html
+    rm -f /root/vpn-setup-info.txt
+    rm -f /root/vpn-setup-sub.txt
+    rm -f /etc/sysctl.d/99-vpn-tuning.conf
+    rm -f /etc/iptables/rules.v4
+
+    # Очищаем iptables
+    iptables -t mangle -F OUTPUT 2>/dev/null || true
+    iptables -t nat -F POSTROUTING 2>/dev/null || true
+    ip6tables -t mangle -F OUTPUT 2>/dev/null || true
+    ip rule del fwmark 0x1 table 200 2>/dev/null || true
+
+    # Удаляем пользователей
+    userdel -r hysteria 2>/dev/null || true
+    userdel -r vpnsub 2>/dev/null || true
+    userdel -r mita 2>/dev/null || true
+
+    # Удаляем WARP-интерфейс
+    ip link del wgcf-warp 2>/dev/null || true
+
+    # Удаляем iptables-правило ICMP
+    sed -i '/vpn-setup-icmp-block/d' /etc/ufw/before.rules 2>/dev/null || true
+
+    systemctl daemon-reload 2>/dev/null || true
+
+    printf "  ${GREEN}✔${NC}  VPN-сервер полностью удалён.\n\n"
+}
+
+# =============================================================================
+# STATUS
+# =============================================================================
+do_status() {
+    printf "\n  ${BOLD}${CYAN}VPN Server Status${NC}\n"
+    printf "  %s\n\n" "──────────────────────────────────────────────────────────"
+
+    # Mieru
+    if systemctl is-active --quiet mita 2>/dev/null; then
+        printf "  ${GREEN}●${NC}  Mieru (mita)         ${GREEN}работает${NC}\n"
+    else
+        printf "  ${RED}●${NC}  Mieru (mita)         ${RED}остановлен${NC}\n"
+    fi
+
+    # Hysteria2
+    if systemctl is-active --quiet hysteria-server 2>/dev/null; then
+        printf "  ${GREEN}●${NC}  Hysteria2             ${GREEN}работает${NC}\n"
+    else
+        printf "  ${RED}●${NC}  Hysteria2             ${RED}остановлен${NC}\n"
+    fi
+
+    # WARP
+    if wg show wgcf-warp &>/dev/null 2>&1; then
+        printf "  ${GREEN}●${NC}  Cloudflare WARP       ${GREEN}активен${NC}\n"
+    else
+        printf "  ${YELLOW}●${NC}  Cloudflare WARP       ${YELLOW}не активен${NC}\n"
+    fi
+
+    # Subscription server
+    if systemctl is-active --quiet vpn-sub 2>/dev/null; then
+        printf "  ${GREEN}●${NC}  HTTPS-подписка (:8080) ${GREEN}работает${NC}\n"
+    else
+        printf "  ${RED}●${NC}  HTTPS-подписка (:8080) ${RED}остановлен${NC}\n"
+    fi
+
+    # fail2ban
+    if systemctl is-active --quiet fail2ban 2>/dev/null; then
+        printf "  ${GREEN}●${NC}  fail2ban              ${GREEN}работает${NC}\n"
+    else
+        printf "  ${YELLOW}●${NC}  fail2ban              ${YELLOW}не активен${NC}\n"
+    fi
+
+    # IP
+    local server_ip
+    server_ip=$(get_server_ip)
+    printf "\n  IP сервера: ${BOLD}%s${NC}\n" "$server_ip"
+
+    # Креденциалы
+    if [[ -f "$STATE_DIR/mieru.env" ]]; then
+        source "$STATE_DIR/mieru.env"
+        printf "\n  ${CYAN}Mieru:${NC}  порт ${MIERU_PORT:-?} (TCP) / ${MIERU_UDP_PORT:-?} (UDP)\n"
+    fi
+    if [[ -f "$STATE_DIR/hysteria2.env" ]]; then
+        source "$STATE_DIR/hysteria2.env"
+        printf "  ${CYAN}Hysteria2:${NC} порт ${H2_PORT:-?} (UDP)\n"
+    fi
+    if [[ -f "$STATE_DIR/subscription_path" ]]; then
+        source "$STATE_DIR/subscription_path"
+        printf "\n  Подписка: ${BOLD}https://%s:8080/%s${NC}\n" "$server_ip" "${SUB_PATH:-?}"
+    fi
+
+    printf "\n"
+}
+
+# =============================================================================
+# MULTI-USER
+# =============================================================================
+do_add_user() {
+    local username="${1:-}"
+    if [[ -z "$username" ]]; then
+        printf "  ${RED}✗${NC}  Использование: setup.sh --add-user <имя>\n"
+        exit 1
+    fi
+
+    local users_file="$STATE_DIR/vpn-users.conf"
+    mkdir -p "$STATE_DIR"
+
+    if grep -q "^${username}|" "$users_file" 2>/dev/null; then
+        printf "  ${YELLOW}!${NC}  Пользователь '%s' уже существует.\n" "$username"
+        return 0
+    fi
+
+    local password
+    password=$(openssl rand -base64 22 | tr -d '/+=' | head -c 24)
+
+    echo "${username}|${password}" >> "$users_file"
+    chmod 600 "$users_file"
+
+    # Обновляем конфиг Mieru с новым пользователем
+    if [[ -f "$STATE_DIR/mieru.env" ]]; then
+        source "$STATE_DIR/mieru.env"
+        local users_json=""
+        while IFS='|' read -r uname upass; do
+            [[ -n "$uname" ]] && users_json+="{\"name\":\"${uname}\",\"password\":\"${upass}\"},"
+        done < "$users_file"
+        users_json="[${users_json%,}]"
+
+        cat > /tmp/mita_users_config.json <<EOF
+{
+    "portBindings": [
+        {"port": ${MIERU_PORT}, "protocol": "TCP"},
+        {"port": ${MIERU_UDP_PORT}, "protocol": "UDP"}
+    ],
+    "users": ${users_json},
+    "loggingLevel": "WARN",
+    "mtu": 1400
+}
+EOF
+        mita apply config /tmp/mita_users_config.json 2>/dev/null || true
+        rm -f /tmp/mita_users_config.json
+        systemctl restart mita 2>/dev/null || true
+    fi
+
+    printf "  ${GREEN}✔${NC}  Пользователь '%s' добавлен. Пароль: ${BOLD}%s${NC}\n\n" "$username" "$password"
+}
+
+do_remove_user() {
+    local username="${1:-}"
+    if [[ -z "$username" ]]; then
+        printf "  ${RED}✗${NC}  Использование: setup.sh --remove-user <имя>\n"
+        exit 1
+    fi
+
+    local users_file="$STATE_DIR/vpn-users.conf"
+    if [[ ! -f "$users_file" ]] || ! grep -q "^${username}|" "$users_file" 2>/dev/null; then
+        printf "  ${YELLOW}!${NC}  Пользователь '%s' не найден.\n" "$username"
+        return 0
+    fi
+
+    sed -i "/^${username}|/d" "$users_file"
+
+    # Обновляем конфиг Mieru
+    if [[ -f "$STATE_DIR/mieru.env" ]]; then
+        source "$STATE_DIR/mieru.env"
+        local users_json=""
+        if [[ -s "$users_file" ]]; then
+            while IFS='|' read -r uname upass; do
+                [[ -n "$uname" ]] && users_json+="{\"name\":\"${uname}\",\"password\":\"${upass}\"},"
+            done < "$users_file"
+            users_json="[${users_json%,}]"
+        else
+            users_json="[]"
+        fi
+
+        cat > /tmp/mita_users_config.json <<EOF
+{
+    "portBindings": [
+        {"port": ${MIERU_PORT}, "protocol": "TCP"},
+        {"port": ${MIERU_UDP_PORT}, "protocol": "UDP"}
+    ],
+    "users": ${users_json},
+    "loggingLevel": "WARN",
+    "mtu": 1400
+}
+EOF
+        mita apply config /tmp/mita_users_config.json 2>/dev/null || true
+        rm -f /tmp/mita_users_config.json
+        systemctl restart mita 2>/dev/null || true
+    fi
+
+    printf "  ${GREEN}✔${NC}  Пользователь '%s' удалён.\n\n" "$username"
+}
+
+# =============================================================================
+# FAIL2BAN + SSH HARDENING
+# =============================================================================
+setup_fail2ban() {
+    step_begin "fail2ban + SSH hardening"
+
+    if is_done "setup_fail2ban"; then
+        step_skip; return 0
+    fi
+
+    # Установка fail2ban
+    if [[ "$PKG_MANAGER" == "apt" ]]; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fail2ban >> "$LOG_FILE" 2>&1 || true
+    elif [[ "$PKG_MANAGER" == "dnf" ]]; then
+        dnf install -y -q epel-release >> "$LOG_FILE" 2>&1 || true
+        dnf install -y -q fail2ban >> "$LOG_FILE" 2>&1 || true
+    fi
+
+    # Конфигурация fail2ban
+    cat > /etc/fail2ban/jail.local <<EOF
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 5
+backend = systemd
+
+[sshd]
+enabled = true
+port = ${SSH_PORT}
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 86400
+EOF
+
+    systemctl enable fail2ban >> "$LOG_FILE" 2>&1 || true
+    systemctl restart fail2ban >> "$LOG_FILE" 2>&1 || true
+
+    # SSH hardening: отключение парольной аутентификации
+    local sshd_config="/etc/ssh/sshd_config"
+    if [[ -f "$sshd_config" ]]; then
+        cp "$sshd_config" "${sshd_config}.bak" 2>/dev/null || true
+        # Включаем pubkey-only если ещё не включён
+        if ! grep -q "^PubkeyAuthentication yes" "$sshd_config" 2>/dev/null; then
+            sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' "$sshd_config" 2>/dev/null || true
+        fi
+        if ! grep -q "^PasswordAuthentication no" "$sshd_config" 2>/dev/null; then
+            sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' "$sshd_config" 2>/dev/null || true
+        fi
+        if ! grep -q "^ChallengeResponseAuthentication no" "$sshd_config" 2>/dev/null; then
+            sed -i 's/^#\?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/' "$sshd_config" 2>/dev/null || true
+        fi
+        systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
+    fi
+
+    mark_done "setup_fail2ban"
+    step_finish
 }
 
 # =============================================================================
 # MAIN — точка входа
 # =============================================================================
 main() {
+    # Обработка аргументов командной строки
+    case "${1:-}" in
+        --uninstall)
+            check_root
+            do_uninstall
+            exit 0
+            ;;
+        --status)
+            do_status
+            exit 0
+            ;;
+        --add-user)
+            check_root
+            do_add_user "${2:-}"
+            exit 0
+            ;;
+        --remove-user)
+            check_root
+            do_remove_user "${2:-}"
+            exit 0
+            ;;
+    esac
+
     init_log
     check_root
     check_os
@@ -1269,6 +1616,7 @@ main() {
     install_hysteria2
     setup_warp
     setup_subscription_server
+    setup_fail2ban
     print_summary
 }
 
