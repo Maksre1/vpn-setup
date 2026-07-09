@@ -1133,7 +1133,7 @@ print_summary() {
         "enabled": true,
         "server_name": "${H2_CERT_CN:-mail.example.com}",
         "insecure": false,
-        "pinned_peer_cert_sha256": ["${H2_CERT_PIN:-}"]
+        "pinned_peer_cert_sha256": ["${H2_CERT_PIN_HEX:-}"]
       }
     },
     {
