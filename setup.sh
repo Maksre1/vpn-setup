@@ -622,7 +622,7 @@ setup_warp() {
         aarch64)  deb_arch="arm64" ;;
         *)
             log_fail "Неподдерживаемая архитектура для wgcf: $wgcf_arch"
-            return 1
+            return 0
             ;;
     esac
 
@@ -643,9 +643,10 @@ setup_warp() {
             chmod +x /usr/local/bin/wgcf
             log_ok "wgcf установлен"
         else
-            log_fail "Не удалось скачать wgcf с GitHub."
+            log_fail "Не удалось скачать wgcf с GitHub (таймаут соединения)."
             log_info "Ссылка: $wgcf_url"
-            return 1
+            log_info "Пропуск настройки WARP. VPN будет работать напрямую без WARP."
+            return 0
         fi
     else
         log_ok "wgcf уже установлен"
@@ -660,8 +661,9 @@ setup_warp() {
         if wgcf register --accept-tos >> "$LOG_FILE" 2>&1; then
             log_ok "WARP зарегистрирован"
         else
-            log_fail "Регистрация WARP не удалась."
-            return 1
+            log_fail "Регистрация WARP не удалась (Cloudflare API заблокировано или перегружено)."
+            log_info "Пропуск настройки WARP. VPN будет работать напрямую без WARP."
+            return 0
         fi
     else
         log_ok "WARP уже зарегистрирован"
@@ -672,8 +674,9 @@ setup_warp() {
         if wgcf generate >> "$LOG_FILE" 2>&1; then
             log_ok "Профиль сгенерирован"
         else
-            log_fail "Не удалось сгенерировать wgcf профиль"
-            return 1
+            log_fail "Не удалось сгенерировать wgcf профиль."
+            log_info "Пропуск настройки WARP. VPN будет работать напрямую без WARP."
+            return 0
         fi
     else
         log_ok "Профиль уже сгенерирован"
@@ -698,7 +701,8 @@ setup_warp() {
             log_ok "wgcf-warp поднят"
         else
             log_fail "Не удалось поднять wgcf-warp. Возможна LXC/OpenVZ виртуализация без поддержки WireGuard."
-            return 1
+            log_info "Пропуск настройки WARP. VPN будет работать напрямую без WARP."
+            return 0
         fi
     fi
 
