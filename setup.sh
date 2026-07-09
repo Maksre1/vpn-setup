@@ -292,12 +292,6 @@ detect_system_specs() {
     fi
 
     # ── Вычисление sysctl-буферов на основе RAM и CPU ────────────────────────
-    #
-    # Логика масштабирования:
-    #   RAM < 1 ГБ  → консервативно (1-2 МБ на сокет)
-    #   RAM 1-4 ГБ  → средние значения (8-16 МБ)
-    #   RAM > 4 ГБ  → агрессивно (32-64 МБ), особенно при ≥2 CPU
-    #
     log_step "Вычисление оптимальных сетевых буферов..."
 
     if [[ $RAM_MB -lt 1024 ]]; then
@@ -353,15 +347,10 @@ detect_system_specs() {
     export NET_IFACE
 
     log_ok "Профиль буферов: $BUF_TIER"
-    log_info "  net.core.rmem_max         = $RMEM_MAX байт ($(( RMEM_MAX / 1024 / 1024 )) МБ)"
+    log_info "  net.core.rmem_max         = $RMEM_MAX байт"
     log_info "  net.core.wmem_max         = $WMEM_MAX байт"
     log_info "  net.ipv4.tcp_rmem         = $TCP_RMEM"
     log_info "  net.ipv4.tcp_wmem         = $TCP_WMEM"
-    log_info "  net.core.netdev_max_backlog = $NETDEV_MAX_BACKLOG"
-    log_info "  net.core.somaxconn        = $SOMAXCONN"
-    log_info "  net.ipv4.tcp_max_syn_backlog = $TCP_MAX_SYN_BACKLOG"
-    log_info ""
-    log_info "Основание: RAM=${RAM_MB}МБ, CPU=${CPU_CORES} ядер, BBR_AVAILABLE=$BBR_AVAILABLE"
 
     log_ok "Шаг 3 завершён."
 }
@@ -379,7 +368,7 @@ tune_network() {
 
     # Проверяем, что переменные установлены (шаг 3 должен быть выполнен)
     if [[ -z "${RMEM_MAX:-}" ]]; then
-        log_fail "Переменные из detect_system_specs не установлены. Запустите шаг 3 сначала."
+        log_fail "Переменные из detect_system_specs не установлены."
         return 1
     fi
 
@@ -387,47 +376,24 @@ tune_network() {
 
     cat > /etc/sysctl.d/99-vpn-tuning.conf <<EOF
 # Файл сгенерирован setup.sh $(date '+%Y-%m-%d %H:%M:%S')
-# Профиль: RAM=${RAM_MB}МБ, CPU=${CPU_CORES}, BBR=${BBR_AVAILABLE}
-
-# ── TCP Congestion Control: BBR + fq qdisc ──────────────────────────────────
-$(if [[ $BBR_AVAILABLE -eq 1 ]]; then
-    echo "net.ipv4.tcp_congestion_control = bbr"
-    echo "net.core.default_qdisc = fq"
-else
-    echo "# BBR недоступен в данном ядре — используем cubic"
-    echo "# net.ipv4.tcp_congestion_control = bbr"
-    echo "net.core.default_qdisc = fq"
-fi)
-
-# ── TCP Fast Open (клиент + сервер) ─────────────────────────────────────────
+net.ipv4.tcp_congestion_control = $(if [[ $BBR_AVAILABLE -eq 1 ]]; then echo "bbr"; else echo "cubic"; fi)
+net.core.default_qdisc = fq
 net.ipv4.tcp_fastopen = 3
-
-# ── Буферы приёма/передачи (вычислены на основе RAM=${RAM_MB}МБ) ────────────
 net.core.rmem_max = ${RMEM_MAX}
 net.core.wmem_max = ${WMEM_MAX}
 net.core.rmem_default = 262144
 net.core.wmem_default = 262144
 net.ipv4.tcp_rmem = ${TCP_RMEM}
 net.ipv4.tcp_wmem = ${TCP_WMEM}
-
-# ── MTU Probing ──────────────────────────────────────────────────────────────
 net.ipv4.tcp_mtu_probing = 1
-
-# ── Очереди соединений ───────────────────────────────────────────────────────
 net.core.netdev_max_backlog = ${NETDEV_MAX_BACKLOG}
 net.core.somaxconn = ${SOMAXCONN}
 net.ipv4.tcp_max_syn_backlog = ${TCP_MAX_SYN_BACKLOG}
-
-# ── Защита и надёжность ─────────────────────────────────────────────────────
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.ip_local_port_range = 10240 65000
 net.ipv4.tcp_fin_timeout = 30
-
-# ── ICMP ping: игнорировать входящие echo-request ───────────────────────────
 net.ipv4.icmp_echo_ignore_all = 1
-
-# ── IP forwarding (для WireGuard/WARP) ──────────────────────────────────────
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 EOF
@@ -438,56 +404,13 @@ EOF
     if sysctl --system >> "$LOG_FILE" 2>&1; then
         log_ok "sysctl --system выполнен"
     else
-        log_fail "sysctl --system завершился с ошибкой. Проверьте $LOG_FILE"
+        log_fail "sysctl --system завершился с ошибкой. Проверить в $LOG_FILE"
         return 1
     fi
 
-    # Верификация BBR
-    if [[ $BBR_AVAILABLE -eq 1 ]]; then
-        log_step "Проверка активного алгоритма управления нагрузкой..."
-        local active_cc
-        active_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
-        if [[ "$active_cc" == "bbr" ]]; then
-            log_ok "BBR активен: $(sysctl net.ipv4.tcp_congestion_control)"
-        else
-            log_fail "BBR не активен! Текущий: $active_cc"
-        fi
-        log_info "Проверочная команда: sysctl net.ipv4.tcp_congestion_control"
-    fi
-
-    # Верификация ICMP
-    log_step "Проверка блокировки ICMP..."
-    local icmp_block
-    icmp_block=$(sysctl -n net.ipv4.icmp_echo_ignore_all 2>/dev/null || echo "0")
-    if [[ "$icmp_block" == "1" ]]; then
-        log_ok "ICMP echo-request заблокирован через sysctl"
-    else
-        log_fail "ICMP блокировка не активна"
-    fi
-
     # Дополнительное правило iptables для блокировки ICMP (двойная защита)
-    log_step "Добавление iptables-правила блокировки ICMP..."
     if ! iptables -C INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null; then
         iptables -I INPUT -p icmp --icmp-type echo-request -j DROP
-        log_ok "iptables: ICMP echo-request DROP добавлен"
-    else
-        log_ok "iptables: правило блокировки ICMP уже существует"
-    fi
-
-    # Сохраняем iptables для персистентности
-    if command -v iptables-save &>/dev/null; then
-        mkdir -p /etc/iptables
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-    fi
-
-    # Применяем qdisc fq на основном интерфейсе (если определён)
-    if [[ -n "${NET_IFACE:-}" ]]; then
-        log_step "Установка qdisc fq на интерфейсе $NET_IFACE..."
-        if tc qdisc replace dev "$NET_IFACE" root fq 2>/dev/null; then
-            log_ok "qdisc fq установлен на $NET_IFACE"
-        else
-            log_info "tc qdisc fq: не критично, параметр уже применён через sysctl"
-        fi
     fi
 
     mark_done "tune_network"
@@ -497,16 +420,11 @@ EOF
 # =============================================================================
 # 5. install_mieru — установка прокси-сервера Mieru (mita)
 # =============================================================================
-# Источник: https://github.com/enfein/mieru/blob/main/docs/server-install.md
-# Серверный компонент: mita (не mieru — это клиент)
-# Конфигурирование: mita apply config <file.json>
-# =============================================================================
 install_mieru() {
     log_section "5. Установка Mieru (mita — серверный компонент)"
 
     if is_done "install_mieru"; then
         log_ok "Шаг уже выполнен, пропускаем."
-        # Загружаем сохранённые переменные
         if [[ -f "$STATE_DIR/mieru.env" ]]; then
             # shellcheck source=/dev/null
             source "$STATE_DIR/mieru.env"
@@ -514,8 +432,7 @@ install_mieru() {
         return 0
     fi
 
-    # ── Определение архитектуры ────────────────────────────────────────────
-    log_step "Определение архитектуры system..."
+    log_step "Определение архитектуры системы..."
     local arch
     arch=$(uname -m)
     local deb_arch
@@ -523,13 +440,11 @@ install_mieru() {
         x86_64)   deb_arch="amd64" ;;
         aarch64)  deb_arch="arm64" ;;
         *)
-            log_fail "Неподдерживаемая архитектура: $arch. Mieru поддерживает amd64 и arm64."
+            log_fail "Неподдерживаемая архитектура: $arch."
             return 1
             ;;
     esac
-    log_ok "Архитектура: $arch → пакет $deb_arch"
 
-    # ── Определение последней версии mita через GitHub API ────────────────
     log_step "Получение последней версии mita с GitHub..."
     local mita_version
     mita_version=$(curl -s --max-time 15 \
@@ -541,18 +456,16 @@ install_mieru() {
         log_fail "Не удалось получить версию mita из GitHub API"
         return 1
     fi
-    log_ok "Последняя версия mita: $mita_version"
 
-    # ── Скачивание и установка .deb пакета ────────────────────────────────
     local deb_file="mita_${mita_version}_${deb_arch}.deb"
     local download_url="https://github.com/enfein/mieru/releases/download/v${mita_version}/${deb_file}"
     local tmp_deb="/tmp/${deb_file}"
 
     log_step "Скачивание $deb_file..."
     if curl -L --max-time 120 --progress-bar -o "$tmp_deb" "$download_url" 2>&1 | tee -a "$LOG_FILE"; then
-        log_ok "Загружен: $tmp_deb"
+        log_ok "Скачано"
     else
-        log_fail "Не удалось скачать $download_url"
+        log_fail "Не удалось скачать mita с GitHub"
         return 1
     fi
 
@@ -560,33 +473,14 @@ install_mieru() {
     if dpkg -i "$tmp_deb" >> "$LOG_FILE" 2>&1; then
         log_ok "mita установлен"
     else
-        log_fail "dpkg -i завершился с ошибкой. Проверьте $LOG_FILE"
+        log_fail "dpkg -i завершился с ошибкой."
         return 1
     fi
     rm -f "$tmp_deb"
 
-    # ── Генерация порта и пароля ───────────────────────────────────────────
-    log_step "Генерация случайного TCP-порта для Mieru (диапазон 20000-50000)..."
     MIERU_PORT=$(find_free_port tcp 20000 50000)
-    log_ok "Mieru TCP-порт: $MIERU_PORT"
-
-    log_step "Генерация случайного имени пользователя и пароля..."
     MIERU_USER="user_$(openssl rand -hex 4)"
     MIERU_PASS=$(openssl rand -base64 22 | tr -d '/+=' | head -c 24)
-    log_ok "Mieru пользователь: $MIERU_USER"
-    log_ok "Mieru пароль сгенерирован (скрыт в логе)"
-
-    # ── Создание конфигурационного файла ──────────────────────────────────
-    # Формат конфига: JSON, применяется через `mita apply config <file>`
-    # Поля: portBindings (port + protocol), users (name + password),
-    #        loggingLevel, mtu
-    # Протокол TCP выбран для лучшей устойчивости к DPI:
-    #   — TCP-трафик Mieru шифруется XChaCha20-Poly1305
-    #   — случайный padding и anti-replay защита встроены
-    #   — не использует TLS, поэтому нет fingerprint TLS handshake
-
-    log_step "Создание конфигурационного файла mita..."
-    mkdir -p "$MIERU_CONFIG_DIR"
 
     local mita_config_file="/tmp/mita_server_config.json"
     cat > "$mita_config_file" <<EOF
@@ -608,44 +502,24 @@ install_mieru() {
 }
 EOF
 
-    log_ok "Конфиг mita: $mita_config_file"
-
-    # ── Применение конфига через CLI ──────────────────────────────────────
-    # mita должен быть запущен (systemd), затем применяем конфиг
-    log_step "Запуск mita (systemd)..."
     systemctl enable mita >> "$LOG_FILE" 2>&1 || true
     systemctl start mita >> "$LOG_FILE" 2>&1 || {
-        log_fail "Не удалось запустить mita. Проверьте: journalctl -u mita"
+        log_fail "Не удалось запустить службу mita"
         return 1
     }
+    sleep 2
 
-    # Ждём запуска
-    sleep 3
-
-    log_step "Применение конфигурации через mita apply config..."
     if mita apply config "$mita_config_file" >> "$LOG_FILE" 2>&1; then
         log_ok "Конфигурация применена"
     else
-        log_fail "mita apply config завершился с ошибкой. Проверьте $LOG_FILE"
+        log_fail "Не удалось применить конфигурацию mita"
         return 1
     fi
     rm -f "$mita_config_file"
 
-    # Запускаем прокси-сервер mita
-    log_step "Запуск mita в режиме старт..."
-    if mita start >> "$LOG_FILE" 2>&1; then
-        log_ok "mita запущен (статус: mita status)"
-    else
-        log_fail "mita start завершился с ошибкой"
-        return 1
-    fi
-
-    # ── Открытие порта в ufw ───────────────────────────────────────────────
-    log_step "Открытие порта $MIERU_PORT/tcp в ufw..."
+    mita start >> "$LOG_FILE" 2>&1 || true
     ufw allow "$MIERU_PORT"/tcp comment "Mieru proxy" >> "$LOG_FILE" 2>&1
-    log_ok "Порт $MIERU_PORT/tcp открыт"
 
-    # Сохраняем переменные для print_summary
     mkdir -p "$STATE_DIR"
     cat > "$STATE_DIR/mieru.env" <<EOF
 MIERU_PORT=${MIERU_PORT}
@@ -656,22 +530,11 @@ EOF
     chmod 600 "$STATE_DIR/mieru.env"
 
     mark_done "install_mieru"
-    log_ok "Шаг 5 завершён. Mieru (mita v${mita_version}) установлен на порту $MIERU_PORT"
-
-    # Проверочная информация
-    log_info "Проверка: mita status"
-    log_info "Логи:     journalctl -u mita -f"
+    log_ok "Шаг 5 завершён."
 }
 
 # =============================================================================
 # 6. install_hysteria2 — установка Hysteria2
-# =============================================================================
-# Источник: https://v2.hysteria.network/docs/advanced/Full-Server-Config/
-# Конфиг: YAML (/etc/hysteria/config.yaml)
-# Obfs: salamander (scrambles каждый пакет в random bytes)
-# TLS: самоподписанный сертификат (без домена)
-# Bandwidth: не указываем на сервере (для personal use — указывать только на клиенте)
-#            это позволяет использовать BBR congestion control вместо Brutal
 # =============================================================================
 install_hysteria2() {
     log_section "6. Установка Hysteria2"
@@ -685,46 +548,21 @@ install_hysteria2() {
         return 0
     fi
 
-    # ── Установка через официальный скрипт ────────────────────────────────
-    log_step "Установка Hysteria2 через официальный install-скрипт..."
+    log_step "Установка Hysteria2 через официальный скрипт..."
     if bash <(curl -fsSL https://get.hy2.sh/) >> "$LOG_FILE" 2>&1; then
         log_ok "Hysteria2 установлен"
     else
-        log_fail "Установка Hysteria2 завершилась с ошибкой. Проверьте $LOG_FILE"
+        log_fail "Не удалось установить Hysteria2"
         return 1
     fi
 
-    # Проверяем, что бинарник доступен
-    if ! command -v hysteria &>/dev/null; then
-        log_fail "hysteria бинарник не найден после установки"
-        return 1
-    fi
-    local h2_version
-    h2_version=$(hysteria version 2>/dev/null | grep -oP 'v[\d.]+' | head -1 || echo "unknown")
-    log_ok "Версия Hysteria2: $h2_version"
-
-    # ── Генерация порта, паролей ───────────────────────────────────────────
-    # Используем диапазон 50001-65000 (чтобы не пересекаться с Mieru: 20000-50000)
-    log_step "Генерация случайного UDP-порта (диапазон 50001-65000)..."
     H2_PORT=$(find_free_port udp 50001 65000)
-    log_ok "Hysteria2 UDP-порт: $H2_PORT"
-
-    log_step "Генерация пароля аутентификации..."
     H2_PASS=$(openssl rand -base64 22 | tr -d '/+=' | head -c 24)
-    log_ok "Hysteria2 пароль сгенерирован"
-
-    log_step "Генерация пароля obfs (salamander)..."
     H2_OBFS_PASS=$(openssl rand -base64 22 | tr -d '/+=' | head -c 24)
-    log_ok "Hysteria2 obfs-пароль сгенерирован"
 
-    # ── Самоподписанный TLS-сертификат ────────────────────────────────────
-    # CN выбран нейтральным (не палит назначение сервера)
-    log_step "Генерация самоподписанного TLS-сертификата (10 лет)..."
+    log_step "Генерация самоподписанного TLS-сертификата..."
     mkdir -p "$H2_CERT_DIR"
-
-    # Случайный нейтральный CN
-    local cn_candidates=("mail.example.com" "cdn.example.net" "api.example.org"
-                         "static.example.com" "media.example.net")
+    local cn_candidates=("mail.example.com" "cdn.example.net" "api.example.org")
     local cn_index=$(( RANDOM % ${#cn_candidates[@]} ))
     H2_CERT_CN="${cn_candidates[$cn_index]}"
 
@@ -733,88 +571,38 @@ install_hysteria2() {
         -out    "$H2_CERT_DIR/server.crt" \
         -days   3650 \
         -nodes \
-        -subj   "/CN=${H2_CERT_CN}/O=Example Corp/C=US" \
+        -subj   "/CN=${H2_CERT_CN}/O=Example/C=US" \
         >> "$LOG_FILE" 2>&1
 
     chmod 600 "$H2_CERT_DIR/server.key"
     chmod 644 "$H2_CERT_DIR/server.crt"
-    log_ok "TLS-сертификат: CN=$H2_CERT_CN, срок 10 лет"
-    log_info "  cert: $H2_CERT_DIR/server.crt"
-    log_info "  key:  $H2_CERT_DIR/server.key"
-
-    # ── Создание конфигурационного файла ──────────────────────────────────
-    # Ключевые решения (согласно документации):
-    #
-    # obfs.salamander: XOR-шифрование каждого UDP-пакета — скрывает QUIC-трафик.
-    #   ВНИМАНИЕ: обфускация делает сервер несовместимым со стандартным HTTP/3.
-    #   Это trade-off: обфускация vs HTTP/3 masquerade. Выбираем обфускацию
-    #   (приоритет DPI-устойчивости, т.к. домена нет и masquerade неполноценен).
-    #
-    # bandwidth: НЕ указываем на сервере для personal use.
-    #   Без серверного bandwidth клиент использует BBR congestion control.
-    #   Если указать bandwidth — включится Brutal (фиксированная скорость),
-    #   что требует знания реальной пропускной способности канала.
-    #   Рекомендация docs: для личного сервера — bandwidth только на клиенте.
-    #
-    # masquerade: не используется с obfs (они несовместимы).
-    #   При obfs сервер не может выглядеть как HTTP/3 сервер.
-
-    log_step "Создание конфигурации Hysteria2..."
-    mkdir -p "$H2_CONFIG_DIR"
 
     cat > "$H2_CONFIG_DIR/config.yaml" <<EOF
-# Hysteria2 Server Config
-# Сгенерировано setup.sh $(date '+%Y-%m-%d %H:%M:%S')
-# Документация: https://v2.hysteria.network/docs/advanced/Full-Server-Config/
-
 listen: :${H2_PORT}
-
 tls:
   cert: ${H2_CERT_DIR}/server.crt
   key:  ${H2_CERT_DIR}/server.key
-
 auth:
   type: password
   password: ${H2_PASS}
-
-# obfs: salamander — XOR-scrambling каждого UDP-пакета
-# Делает трафик неотличимым от случайного шума для DPI.
-# ВНИМАНИЕ: несовместим с HTTP/3 masquerade (trade-off).
 obfs:
   type: salamander
   salamander:
     password: ${H2_OBFS_PASS}
-
-# QUIC параметры (рекомендуемые значения из официальной документации)
 quic:
-  initStreamReceiveWindow: 8388608    # 8 МБ
-  maxStreamReceiveWindow: 8388608     # 8 МБ
-  initConnReceiveWindow: 20971520     # 20 МБ (ratio stream:conn = 2:5)
-  maxConnReceiveWindow: 20971520      # 20 МБ
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
   maxIdleTimeout: 30s
   maxIncomingStreams: 1024
   disablePathMTUDiscovery: false
-
-# bandwidth: намеренно не задан на сервере (для personal use).
-# Клиент указывает свою скорость в конфиге — сервер использует BBR.
-# Подробнее: https://v2.hysteria.network/docs/advanced/Full-Server-Config/#bandwidth
-
-# Логирование
-# log уровень: debug | info | warn | error
 EOF
 
-    log_ok "Конфиг записан: $H2_CONFIG_DIR/config.yaml"
-
-    # ── Создание systemd unit ──────────────────────────────────────────────
-    log_step "Создание systemd unit для Hysteria2..."
-
-    # Создаём системного пользователя для Hysteria2
     if ! id hysteria &>/dev/null; then
         useradd -r -s /sbin/nologin -d /etc/hysteria hysteria >> "$LOG_FILE" 2>&1
-        log_ok "Системный пользователь hysteria создан"
     fi
 
-    # Даём пользователю hysteria доступ к сертификатам
     chown -R hysteria:hysteria "$H2_CERT_DIR"
     chown hysteria:hysteria "$H2_CONFIG_DIR/config.yaml"
 
@@ -822,7 +610,6 @@ EOF
 [Unit]
 Description=Hysteria2 Server
 After=network.target
-Wants=network.target
 
 [Service]
 Type=simple
@@ -833,75 +620,40 @@ Restart=always
 RestartSec=5s
 LimitNOFILE=1048576
 
-# Логирование
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=hysteria2
-
 [Install]
 WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload >> "$LOG_FILE" 2>&1
     systemctl enable hysteria-server >> "$LOG_FILE" 2>&1
-    if systemctl start hysteria-server; then
-        log_ok "hysteria-server запущен и включён в автозапуск"
+    if systemctl start hysteria-server >> "$LOG_FILE" 2>&1; then
+        log_ok "Сервис hysteria запущен"
     else
-        log_fail "Не удалось запустить hysteria-server. Проверьте: journalctl -u hysteria-server"
+        log_fail "Не удалось запустить сервис hysteria-server"
         return 1
     fi
 
-    sleep 2
-    if systemctl is-active --quiet hysteria-server; then
-        log_ok "Статус hysteria-server: active (running)"
-    else
-        log_fail "hysteria-server не в состоянии running"
-        journalctl -u hysteria-server -n 20 >> "$LOG_FILE" 2>&1
-        return 1
-    fi
-
-    # ── Открытие UDP-порта в ufw ───────────────────────────────────────────
-    log_step "Открытие порта $H2_PORT/udp в ufw..."
     ufw allow "$H2_PORT"/udp comment "Hysteria2" >> "$LOG_FILE" 2>&1
-    log_ok "Порт $H2_PORT/udp открыт"
-
-    # Получаем внешний IP для формирования ссылки
     local server_ip
     server_ip=$(get_server_ip)
-
-    # ── Формирование hysteria2:// URI ──────────────────────────────────────
-    # Формат: hysteria2://<password>@<host>:<port>?obfs=salamander&obfs-password=<p>&insecure=1
-    # insecure=1 ОБЯЗАТЕЛЕН: самоподписанный сертификат без доверенного CA
     H2_URI="hysteria2://${H2_PASS}@${server_ip}:${H2_PORT}?obfs=salamander&obfs-password=${H2_OBFS_PASS}&insecure=1&sni=${H2_CERT_CN}"
 
-    # Сохраняем переменные для print_summary
     cat > "$STATE_DIR/hysteria2.env" <<EOF
 H2_PORT=${H2_PORT}
 H2_PASS=${H2_PASS}
 H2_OBFS_PASS=${H2_OBFS_PASS}
 H2_CERT_CN=${H2_CERT_CN}
 H2_URI=${H2_URI}
-H2_VERSION=${h2_version}
+H2_VERSION=$(hysteria version 2>/dev/null | head -n 1 || echo "unknown")
 EOF
     chmod 600 "$STATE_DIR/hysteria2.env"
 
     mark_done "install_hysteria2"
-    log_ok "Шаг 6 завершён. Hysteria2 $h2_version на порту $H2_PORT/udp"
-
-    log_info "Проверка:  systemctl status hysteria-server"
-    log_info "Логи:      journalctl -u hysteria-server -f"
+    log_ok "Шаг 6 завершён."
 }
 
 # =============================================================================
 # 7. setup_warp — Cloudflare WARP через wgcf
-# =============================================================================
-# Архитектура маршрутизации:
-#   ┌─────────────────────────────────────────────────────────┐
-#   │  mita-server (UID=mita) → mark 0x1 → таблица 200      │
-#   │  hysteria    (UID=hysteria) → mark 0x1 → таблица 200   │
-#   │  Таблица 200: default route via wgcf-warp               │
-#   │  Обычный трафик: default route = основной интерфейс     │
-#   └─────────────────────────────────────────────────────────┘
 # =============================================================================
 setup_warp() {
     log_section "7. Настройка Cloudflare WARP (wgcf)"
@@ -925,12 +677,17 @@ setup_warp() {
             ;;
     esac
 
+    # Проверка скачивания wgcf с выводом ошибки
     if ! command -v wgcf &>/dev/null; then
-        curl -fsSL --max-time 60 -o /usr/local/bin/wgcf "$wgcf_url" >> "$LOG_FILE" 2>&1
-        chmod +x /usr/local/bin/wgcf
-        log_ok "wgcf установлен: $(wgcf --version 2>/dev/null || echo 'OK')"
+        if curl -fsSL --max-time 60 -o /usr/local/bin/wgcf "$wgcf_url" >> "$LOG_FILE" 2>&1; then
+            chmod +x /usr/local/bin/wgcf
+            log_ok "wgcf установлен"
+        else
+            log_fail "Не удалось скачать wgcf с GitHub (таймаут соединения или репозиторий недоступен)."
+            return 1
+        fi
     else
-        log_ok "wgcf уже установлен: $(wgcf --version 2>/dev/null || echo 'OK')"
+        log_ok "wgcf уже установлен"
     fi
 
     # ── Регистрация WARP-аккаунта ──────────────────────────────────────────
@@ -941,9 +698,9 @@ setup_warp() {
     log_step "Регистрация нового WARP-аккаунта (wgcf register)..."
     if [[ ! -f "$warp_dir/wgcf-account.toml" ]]; then
         if wgcf register --accept-tos >> "$LOG_FILE" 2>&1; then
-            log_ok "WARP аккаунт зарегистрирован: $warp_dir/wgcf-account.toml"
+            log_ok "WARP аккаунт зарегистрирован"
         else
-            log_fail "wgcf register завершился с ошибкой. Проверьте $LOG_FILE"
+            log_fail "Регистрация WARP не удалась (Cloudflare API может быть недоступно/заблокировано)."
             return 1
         fi
     else
@@ -954,9 +711,9 @@ setup_warp() {
     log_step "Генерация WireGuard-конфига (wgcf generate)..."
     if [[ ! -f "$warp_dir/wgcf-profile.conf" ]]; then
         if wgcf generate >> "$LOG_FILE" 2>&1; then
-            log_ok "Профиль сгенерирован: $warp_dir/wgcf-profile.conf"
+            log_ok "Профиль сгенерирован"
         else
-            log_fail "wgcf generate завершился с ошибкой"
+            log_fail "Не удалось сгенерировать профиль WireGuard через wgcf"
             return 1
         fi
     else
@@ -964,196 +721,109 @@ setup_warp() {
     fi
 
     # ── Адаптация профиля под отдельный интерфейс ─────────────────────────
-    # ВАЖНО: удаляем AllowedIPs=0.0.0.0/0 — иначе весь трафик пойдёт через WARP.
-    # Оставляем маршруты только через таблицу 200 (policy routing ниже).
-    log_step "Адаптация wgcf-профиля (убираем перехват всего трафика)..."
+    log_step "Адаптация wgcf-профиля (Split-Tunneling)..."
     local wg_conf_src="$warp_dir/wgcf-profile.conf"
     local wg_conf_dst="/etc/wireguard/wgcf-warp.conf"
 
-    # Копируем и правим конфиг
     cp "$wg_conf_src" "$wg_conf_dst"
-
-    # Удаляем AllowedIPs = 0.0.0.0/0, ::/0 — заменяем на хосты Cloudflare WARP
-    # (нужно только для WireGuard handshake и WARP API)
     sed -i 's|AllowedIPs = 0\.0\.0\.0/0|AllowedIPs = 0.0.0.0/1, 128.0.0.0/1|g' "$wg_conf_dst"
     sed -i 's|AllowedIPs = ::/0||g' "$wg_conf_dst"
-
-    # Отключаем PostUp/PostDown если есть (будем управлять маршрутизацией вручную)
     sed -i '/^PostUp/d'   "$wg_conf_dst"
     sed -i '/^PostDown/d' "$wg_conf_dst"
-
-    # Задаём имя интерфейса через имя файла (wg-quick использует basename)
-    # Файл /etc/wireguard/wgcf-warp.conf → интерфейс wgcf-warp
-    log_ok "Конфиг wgcf-warp: $wg_conf_dst"
 
     # ── Поднятие WireGuard-интерфейса ─────────────────────────────────────
     log_step "Поднятие интерфейса wgcf-warp (wg-quick up)..."
     if wg show wgcf-warp &>/dev/null; then
         log_ok "wgcf-warp уже поднят"
     else
+        # Пытаемся поднять интерфейс WireGuard
         if wg-quick up wgcf-warp >> "$LOG_FILE" 2>&1; then
-            log_ok "wgcf-warp поднят"
+            log_ok "wgcf-warp успешно поднят"
         else
-            log_fail "wg-quick up wgcf-warp завершился с ошибкой"
+            log_fail "Не удалось поднять wgcf-warp."
+            log_info "ВОЗМОЖНАЯ ПРИЧИНА: у вас OpenVZ/LXC VPS, не поддерживающий модули ядра WireGuard."
             return 1
         fi
     fi
 
-    # Включаем автозапуск
-    systemctl enable "wg-quick@wgcf-warp" >> "$LOG_FILE" 2>&1
-    log_ok "wg-quick@wgcf-warp включён в автозапуск"
+    systemctl enable "wg-quick@wgcf-warp" >> "$LOG_FILE" 2>&1 || true
 
     # ── Policy routing: только трафик Mieru и Hysteria2 через WARP ─────────
-    log_step "Настройка policy routing (таблица 200, mark 0x1)..."
+    log_step "Настройка сплит-маршрутизации (таблица 200, mark 0x1)..."
 
-    # Проверяем что таблица 200 существует в /etc/iproute2/rt_tables
     if ! grep -q "^200 " /etc/iproute2/rt_tables; then
         echo "200 warp" >> /etc/iproute2/rt_tables
-        log_ok "Таблица маршрутизации 200 (warp) добавлена в rt_tables"
     fi
 
-    # Получаем WARP-интерфейс и его шлюз
     local warp_iface="wgcf-warp"
-    local warp_addr
-    warp_addr=$(ip addr show "$warp_iface" 2>/dev/null \
-        | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
-    log_info "WARP интерфейс: $warp_iface, адрес: $warp_addr"
-
-    # Добавляем маршрут в таблицу 200: весь трафик через wgcf-warp
     if ! ip route show table 200 2>/dev/null | grep -q "default"; then
         ip route add default dev "$warp_iface" table 200 2>/dev/null || true
-        log_ok "Маршрут по умолчанию в таблице 200: dev $warp_iface"
-    else
-        log_ok "Маршрут в таблице 200 уже существует"
     fi
 
-    # Получаем UID системных пользователей
     local mita_uid hysteria_uid
     mita_uid=$(id -u mita 2>/dev/null || echo "")
     hysteria_uid=$(id -u hysteria 2>/dev/null || echo "")
 
-    log_step "Маркировка пакетов от mita (UID=$mita_uid) и hysteria (UID=$hysteria_uid)..."
-
-    # Маркировка исходящих пакетов по UID через iptables mangle
     setup_warp_routing_rules() {
         local uid="$1"
         local service="$2"
-
-        if [[ -z "$uid" ]]; then
-            log_info "UID для $service не найден, пропуск маркировки"
-            return 0
-        fi
-
-        # Маркируем исходящие пакеты
+        if [[ -z "$uid" ]]; then return 0; fi
         if ! iptables -t mangle -C OUTPUT -m owner --uid-owner "$uid" -j MARK --set-mark 0x1 2>/dev/null; then
             iptables -t mangle -A OUTPUT -m owner --uid-owner "$uid" -j MARK --set-mark 0x1
-            log_ok "iptables mangle: OUTPUT uid=$uid ($service) → MARK 0x1"
-        else
-            log_ok "iptables mangle: правило для $service уже существует"
         fi
     }
 
-    setup_warp_routing_rules "$mita_uid"    "mita (Mieru)"
-    setup_warp_routing_rules "$hysteria_uid" "hysteria (Hysteria2)"
+    setup_warp_routing_rules "$mita_uid"    "mita"
+    setup_warp_routing_rules "$hysteria_uid" "hysteria"
 
-    # Правило ip rule: помеченные пакеты (mark=1) → таблица 200
     if ! ip rule show 2>/dev/null | grep -q "fwmark 0x1 lookup 200"; then
         ip rule add fwmark 0x1 table 200 priority 100
-        log_ok "ip rule: fwmark 0x1 → table 200 (приоритет 100)"
-    else
-        log_ok "ip rule: fwmark 0x1 → table 200 уже существует"
     fi
 
-    # ── Персистентность правил после перезагрузки ──────────────────────────
-    log_step "Создание скрипта персистентности маршрутизации..."
-
+    # ── Персистентность правил ──────────────────────────────────────────────
     cat > /etc/network/if-up.d/warp-routing <<'ROUTING_SCRIPT'
 #!/bin/bash
-# Восстановление policy routing для WARP после перезагрузки
-# Запускается при поднятии любого сетевого интерфейса
-
-WARP_IFACE="wgcf-warp"
-WARP_TABLE=200
-WARP_MARK="0x1"
-
-# Ждём поднятия WARP-интерфейса
 sleep 5
-
-# Таблица маршрутизации
 if ! grep -q "^200 " /etc/iproute2/rt_tables; then
     echo "200 warp" >> /etc/iproute2/rt_tables
 fi
-
-# Маршрут через wgcf-warp
-if ip link show "$WARP_IFACE" &>/dev/null; then
-    ip route add default dev "$WARP_IFACE" table $WARP_TABLE 2>/dev/null || true
+if ip link show wgcf-warp &>/dev/null; then
+    ip route add default dev wgcf-warp table 200 2>/dev/null || true
 fi
-
-# ip rule
-if ! ip rule show 2>/dev/null | grep -q "fwmark $WARP_MARK lookup $WARP_TABLE"; then
-    ip rule add fwmark $WARP_MARK table $WARP_TABLE priority 100 2>/dev/null || true
+if ! ip rule show 2>/dev/null | grep -q "fwmark 0x1 lookup 200"; then
+    ip rule add fwmark 0x1 table 200 priority 100 2>/dev/null || true
 fi
-
-# iptables mangle — маркировка по UID
 for svc in mita hysteria; do
     uid=$(id -u "$svc" 2>/dev/null) || continue
-    if ! iptables -t mangle -C OUTPUT -m owner --uid-owner "$uid" -j MARK --set-mark $WARP_MARK 2>/dev/null; then
-        iptables -t mangle -A OUTPUT -m owner --uid-owner "$uid" -j MARK --set-mark $WARP_MARK 2>/dev/null || true
+    if ! iptables -t mangle -C OUTPUT -m owner --uid-owner "$uid" -j MARK --set-mark 0x1 2>/dev/null; then
+        iptables -t mangle -A OUTPUT -m owner --uid-owner "$uid" -j MARK --set-mark 0x1 2>/dev/null || true
     fi
 done
 ROUTING_SCRIPT
 
     chmod +x /etc/network/if-up.d/warp-routing
-    log_ok "Скрипт персистентности: /etc/network/if-up.d/warp-routing"
 
-    # Также сохраняем правила iptables
-    mkdir -p /etc/iptables
-    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    if command -v iptables-save &>/dev/null; then
+        mkdir -p /etc/iptables
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    fi
 
-    # ── Создание systemd-сервиса для восстановления маршрутизации ─────────
     cat > /etc/systemd/system/warp-routing.service <<EOF
 [Unit]
-Description=WARP Policy Routing для Mieru и Hysteria2
+Description=WARP Policy Routing
 After=network-online.target wg-quick@wgcf-warp.service
-Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/etc/network/if-up.d/warp-routing
-ExecStop=/bin/true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload >> "$LOG_FILE" 2>&1
-    systemctl enable warp-routing >> "$LOG_FILE" 2>&1
-    log_ok "warp-routing.service включён в автозапуск"
-
-    # ── Проверка WARP ──────────────────────────────────────────────────────
-    log_step "Проверка WARP для трафика Hysteria2 (проверяем наличие warp=on)..."
-    sleep 3
-
-    # Простая проверка: curl через warp-интерфейс
-    local warp_check
-    warp_check=$(curl -s --max-time 10 --interface "$warp_iface" \
-        "https://www.cloudflare.com/cdn-cgi/trace/" 2>/dev/null || echo "failed")
-
-    if echo "$warp_check" | grep -q "warp=on"; then
-        log_ok "WARP активен: curl через $warp_iface показывает warp=on"
-    elif echo "$warp_check" | grep -q "warp=off"; then
-        log_info "WARP интерфейс доступен, но показывает warp=off."
-        log_info "Это нормально для WARP lite — трафик маршрутизируется через Cloudflare."
-        log_info "Полная проверка: sudo -u hysteria curl https://www.cloudflare.com/cdn-cgi/trace/"
-    else
-        log_fail "Не удалось проверить WARP статус. Детали: $warp_check"
-        log_info "Проверьте вручную: journalctl -u wg-quick@wgcf-warp"
-    fi
-
-    log_info ""
-    log_info "Проверка: curl https://www.cloudflare.com/cdn-cgi/trace/ (обычный трафик, warp=off ожидается)"
-    log_info "Проверка: sudo -u hysteria curl https://www.cloudflare.com/cdn-cgi/trace/ (ожидается warp=on)"
+    systemctl enable warp-routing >> "$LOG_FILE" 2>&1 || true
 
     mark_done "setup_warp"
     log_ok "Шаг 7 завершён."
@@ -1165,7 +835,6 @@ EOF
 print_summary() {
     log_section "8. Итоговая информация для подключения"
 
-    # Загружаем сохранённые переменные (на случай повторного запуска)
     if [[ -f "$STATE_DIR/mieru.env" ]]; then
         # shellcheck source=/dev/null
         source "$STATE_DIR/mieru.env"
@@ -1178,158 +847,55 @@ print_summary() {
     local server_ip
     server_ip=$(get_server_ip)
 
-    # Статус WARP
-    local warp_status="неизвестно"
+    local warp_status="не активен"
     if wg show wgcf-warp &>/dev/null 2>&1; then
-        warp_status="активен (интерфейс wgcf-warp up)"
-    else
-        warp_status="не активен"
+        warp_status="активен"
     fi
 
-    # ── Формируем файл /root/vpn-setup-info.txt ────────────────────────────
     cat > "$INFO_FILE" <<EOF
 ================================================================================
   VPN Server Setup — Информация для подключения
-  Сгенерировано: $(date '+%Y-%m-%d %H:%M:%S')
   Сервер IP: ${server_ip}
 ================================================================================
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   [1] MIERU (mita)
-  Протокол: TCP + XChaCha20-Poly1305 (без TLS, без домена)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Сервер IP:   ${server_ip}
   TCP порт:    ${MIERU_PORT:-НЕ ОПРЕДЕЛЁН}
   Пользователь: ${MIERU_USER:-НЕ ОПРЕДЕЛЁН}
   Пароль:      ${MIERU_PASS:-НЕ ОПРЕДЕЛЁН}
-  Версия mita: ${MIERU_VERSION:-неизвестно}
 
-  Конфиг клиента Mieru (mieru client):
-  ┌─────────────────────────────────────────────────────────────────┐
-  │ {                                                               │
-  │   "profile": [                                                  │
-  │     {                                                           │
-  │       "profileName": "my-server",                              │
-  │       "user": {                                                 │
-  │         "name": "${MIERU_USER:-USER}",                │
-  │         "password": "${MIERU_PASS:-PASS}"             │
-  │       },                                                        │
-  │       "servers": [                                              │
-  │         {                                                       │
-  │           "ipAddress": "${server_ip}",              │
-  │           "portBindings": [                                     │
-  │             { "port": ${MIERU_PORT:-PORT}, "protocol": "TCP" } │
-  │           ]                                                     │
-  │         }                                                       │
-  │       ]                                                         │
-  │     }                                                           │
-  │   ],                                                            │
-  │   "rpcPort": 8964                                               │
-  │ }                                                               │
-  └─────────────────────────────────────────────────────────────────┘
+  Конфиг клиента Mieru JSON:
+  {
+    "profile": [
+      {
+        "profileName": "my-server",
+        "user": { "name": "${MIERU_USER:-USER}", "password": "${MIERU_PASS:-PASS}" },
+        "servers": [
+          { "ipAddress": "${server_ip}", "portBindings": [ { "port": ${MIERU_PORT:-PORT}, "protocol": "TCP" } ] }
+        ]
+      }
+    ],
+    "rpcPort": 8964
+  }
 
-  Для Clash/Mihomo/Nekoray — используйте тип "mieru" с параметрами выше.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  [2] HYSTERIA2
-  Протокол: QUIC/UDP + Salamander obfs + самоподписанный TLS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Сервер IP:   ${server_ip}
+  [2] HYSTERIA2 (Salamander obfs + самоподписанный TLS)
   UDP порт:    ${H2_PORT:-НЕ ОПРЕДЕЛЁН}
   Пароль:      ${H2_PASS:-НЕ ОПРЕДЕЛЁН}
-  OBFS тип:    salamander
   OBFS пароль: ${H2_OBFS_PASS:-НЕ ОПРЕДЕЛЁН}
   TLS CN:      ${H2_CERT_CN:-НЕ ОПРЕДЕЛЁН}
-  Версия:      ${H2_VERSION:-неизвестно}
 
-  !! ВАЖНО: Используйте insecure=1 (самоподписанный сертификат, без домена) !!
+  Ссылка для клиента:
+  ${H2_URI:-не сгенерирована}
 
-  Строка подключения hysteria2:// (вставить в клиент напрямую):
-  ┌─────────────────────────────────────────────────────────────────┐
-  │ ${H2_URI:-hysteria2://PASS@IP:PORT?obfs=salamander&obfs-password=OBFS&insecure=1}
-  └─────────────────────────────────────────────────────────────────┘
-
-  Конфиг клиента (YAML, для клиентского hysteria / NekoRay / Mihomo):
-  ┌─────────────────────────────────────────────────────────────────┐
-  │ server: ${server_ip}:${H2_PORT:-PORT}                │
-  │ auth: ${H2_PASS:-PASS}                               │
-  │                                                                 │
-  │ obfs:                                                           │
-  │   type: salamander                                              │
-  │   salamander:                                                   │
-  │     password: ${H2_OBFS_PASS:-OBFS_PASS}             │
-  │                                                                 │
-  │ tls:                                                            │
-  │   sni: ${H2_CERT_CN:-CN}                             │
-  │   insecure: true   # обязательно — самоподписанный сертификат  │
-  │                                                                 │
-  │ bandwidth:          # укажи свою реальную скорость интернета    │
-  │   up: 50 mbps                                                   │
-  │   down: 100 mbps                                                │
-  │                                                                 │
-  │ socks5:                                                         │
-  │   listen: 127.0.0.1:1080                                        │
-  │ http:                                                           │
-  │   listen: 127.0.0.1:8080                                        │
-  └─────────────────────────────────────────────────────────────────┘
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   [3] CLOUDFLARE WARP
-  Статус: ${warp_status}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Трафик Mieru и Hysteria2 выходит через WARP (Cloudflare).
-  Обычный трафик сервера (SSH и системный) — через прямой IP сервера.
-
-  Интерфейс:  wgcf-warp
   Статус:     ${warp_status}
-
-  Проверка WARP:
-    sudo -u hysteria curl https://www.cloudflare.com/cdn-cgi/trace/
-    (должно показать warp=on)
-
-  Обычный трафик (НЕ через WARP):
-    curl https://www.cloudflare.com/cdn-cgi/trace/
-    (должно показать warp=off, ip = IP вашего сервера)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Управление сервисами
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Mieru (mita):
-    systemctl status mita
-    mita status
-    journalctl -u mita -f
-
-  Hysteria2:
-    systemctl status hysteria-server
-    journalctl -u hysteria-server -f
-
-  WARP:
-    systemctl status wg-quick@wgcf-warp
-    wg show wgcf-warp
-
-  Логи установки: ${LOG_FILE}
-  Этот файл:     ${INFO_FILE}
 
 ================================================================================
 EOF
 
     chmod 600 "$INFO_FILE"
-
-    # ── Вывод в терминал ───────────────────────────────────────────────────
     echo ""
-    echo -e "${BOLD}${GREEN}"
     cat "$INFO_FILE"
-    echo -e "${NC}"
-
-    log_ok "Информация сохранена в $INFO_FILE"
-    log ""
-    log "${GREEN}${BOLD}══════════════════════════════════════════${NC}"
-    log "${GREEN}${BOLD}  Установка завершена успешно!${NC}"
-    log "${GREEN}${BOLD}══════════════════════════════════════════${NC}"
+    log_ok "Сведения сохранены в $INFO_FILE"
 }
 
 # =============================================================================
@@ -1337,27 +903,14 @@ EOF
 # =============================================================================
 main() {
     init_log
-
     log ""
-    log "${BOLD}${CYAN}╔══════════════════════════════════════════════════╗${NC}"
-    log "${BOLD}${CYAN}║      VPN Server Auto-Setup v1.0                  ║${NC}"
-    log "${BOLD}${CYAN}║  Mieru + Hysteria2 + Cloudflare WARP             ║${NC}"
-    log "${BOLD}${CYAN}║  Ubuntu 22.04 / 24.04                            ║${NC}"
-    log "${BOLD}${CYAN}╚══════════════════════════════════════════════════╝${NC}"
-    log ""
-    log "  Лог:      $LOG_FILE"
-    log "  SSH порт: $SSH_PORT"
-    log "  Время:    $(date '+%Y-%m-%d %H:%M:%S')"
-    log ""
-
+    log "${BOLD}${CYAN}=== VPN Server Auto-Setup ===${NC}"
     check_root
     check_os
 
-    # Выполняем шаги по порядку
-    # Каждый шаг идемпотентен (проверяет маркер .done)
     update_system
     setup_firewall
-    detect_system_specs    # не маркируется .done — нужен при каждом запуске для tune_network
+    detect_system_specs
     tune_network
     install_mieru
     install_hysteria2
@@ -1365,82 +918,4 @@ main() {
     print_summary
 }
 
-# Запуск
 main "$@"
-
-# =============================================================================
-# ИНСТРУКЦИЯ ПО РУЧНОЙ ПРОВЕРКЕ КОМПОНЕНТОВ
-# =============================================================================
-#
-# ── Mieru (mita) ─────────────────────────────────────────────────────────────
-#
-#   # Статус сервиса
-#   systemctl status mita
-#
-#   # Статус прокси (должно показать "RUNNING")
-#   mita status
-#
-#   # Логи в реальном времени
-#   journalctl -u mita -f
-#
-#   # Проверка прослушиваемого порта (MIERU_PORT)
-#   ss -tlnp | grep mita
-#
-#   # Тест соединения с клиента (используйте mieru CLI или Clash Verge Rev)
-#   # Клиент: https://github.com/enfein/mieru/releases (mieru_*_linux_amd64)
-#
-# ── Hysteria2 ─────────────────────────────────────────────────────────────────
-#
-#   # Статус сервиса
-#   systemctl status hysteria-server
-#
-#   # Логи в реальном времени
-#   journalctl -u hysteria-server -f
-#
-#   # Проверка прослушиваемого UDP-порта
-#   ss -ulnp | grep hysteria
-#
-#   # Тест с клиентской стороны:
-#   # 1. Установите hysteria: https://get.hy2.sh/
-#   # 2. Запустите: hysteria client -c client.yaml
-#   # 3. Проверьте: curl --proxy socks5://127.0.0.1:1080 https://ipinfo.io
-#
-# ── Cloudflare WARP ───────────────────────────────────────────────────────────
-#
-#   # Статус WireGuard-интерфейса
-#   wg show wgcf-warp
-#   systemctl status wg-quick@wgcf-warp
-#
-#   # Проверка что Mieru-трафик идёт через WARP:
-#   sudo -u mita curl https://www.cloudflare.com/cdn-cgi/trace/
-#   # Ожидаемый результат: warp=on
-#
-#   # Проверка что Hysteria2-трафик идёт через WARP:
-#   sudo -u hysteria curl https://www.cloudflare.com/cdn-cgi/trace/
-#   # Ожидаемый результат: warp=on
-#
-#   # Проверка что обычный SSH-трафик НЕ идёт через WARP:
-#   curl https://www.cloudflare.com/cdn-cgi/trace/
-#   # Ожидаемый результат: warp=off, ip=<ваш_обычный_IP_сервера>
-#
-#   # Маршрутизация
-#   ip rule show            # должно быть: fwmark 0x1 lookup 200
-#   ip route show table 200 # должно быть: default dev wgcf-warp
-#   iptables -t mangle -L OUTPUT -n -v  # должны быть правила MARK для UID mita/hysteria
-#
-# ── Firewall ──────────────────────────────────────────────────────────────────
-#
-#   ufw status verbose
-#   # Должны быть открыты: SSH-порт (TCP), MIERU_PORT (TCP), H2_PORT (UDP)
-#
-# ── BBR ───────────────────────────────────────────────────────────────────────
-#
-#   sysctl net.ipv4.tcp_congestion_control  # должно вернуть: bbr
-#   sysctl net.core.default_qdisc           # должно вернуть: fq
-#
-# ── ICMP ──────────────────────────────────────────────────────────────────────
-#
-#   sysctl net.ipv4.icmp_echo_ignore_all    # должно вернуть: 1
-#   # Проверка с внешнего хоста: ping <IP_сервера> (не должен отвечать)
-#
-# =============================================================================
