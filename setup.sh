@@ -709,6 +709,17 @@ setup_warp() {
     systemctl enable "wg-quick@wgcf-warp" >> "$LOG_FILE" 2>&1 || true
 
     log_step "Настройка сплит-маршрутизации (таблица 200, mark 0x1)..."
+    mkdir -p /etc/iproute2
+    if [ ! -f /etc/iproute2/rt_tables ]; then
+        cat > /etc/iproute2/rt_tables <<EOF
+# reserved values
+255	local
+254	main
+253	default
+0	unspec
+EOF
+    fi
+
     if ! grep -q "^200 " /etc/iproute2/rt_tables; then
         echo "200 warp" >> /etc/iproute2/rt_tables
     fi
@@ -738,6 +749,15 @@ setup_warp() {
     cat > /etc/network/if-up.d/warp-routing <<'ROUTING_SCRIPT'
 #!/bin/bash
 sleep 5
+mkdir -p /etc/iproute2
+if [ ! -f /etc/iproute2/rt_tables ]; then
+    cat > /etc/iproute2/rt_tables <<EOF
+255	local
+254	main
+253	default
+0	unspec
+EOF
+fi
 if ! grep -q "^200 " /etc/iproute2/rt_tables; then
     echo "200 warp" >> /etc/iproute2/rt_tables
 fi
