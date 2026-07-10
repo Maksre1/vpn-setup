@@ -629,16 +629,9 @@ stats:
 	}
 	_ = exec.Command("chown", "hysteria:hysteria", configPath).Run()
 
-	// Generate and write ACL file
+	// Generate and write ACL file (Hysteria 2 uses direct(all) syntax)
 	aclBuilder := strings.Builder{}
-	if len(warpUsers) > 0 {
-		var quoted []string
-		for _, u := range warpUsers {
-			quoted = append(quoted, fmt.Sprintf(`"%s"`, u))
-		}
-		aclBuilder.WriteString(fmt.Sprintf("warp all auth(%s)\n", strings.Join(quoted, ", ")))
-	}
-	aclBuilder.WriteString("direct all\n")
+	aclBuilder.WriteString("direct(all)\n")
 
 	aclPath := "/etc/hysteria/acl.txt"
 	if err := os.WriteFile(aclPath, []byte(aclBuilder.String()), 0644); err != nil {
