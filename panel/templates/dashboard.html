@@ -105,13 +105,53 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 function refreshServices() {
-    fetch('/api/status').then(r=>r.json()).then(()=>location.reload());
+    fetch('/api/status')
+        .then(r => r.json())
+        .then(statuses => {
+            updateServicesUI(statuses);
+            showToast('Статусы сервисов обновлены', 'success');
+        })
+        .catch(() => showToast('Ошибка обновления статусов', 'danger'));
 }
+
+function updateServicesUI(statuses) {
+    const listItems = document.querySelectorAll('.service-item');
+    listItems.forEach(item => {
+        const sName = item.querySelector('.service-name').textContent.trim();
+        const up = statuses[sName];
+        const statusEl = item.querySelector('.service-status');
+        if (statusEl) {
+            item.className = 'service-item ' + (up ? 'up' : 'down');
+            statusEl.className = 'service-status ' + (up ? 'up' : 'down');
+            statusEl.textContent = up ? 'online' : 'offline';
+        }
+    });
+}
+
 function restartService(name) {
-    const form = document.createElement('form');
-    form.method='POST'; form.action='/settings';
-    form.innerHTML='<input type="hidden" name="action" value="restart"><input type="hidden" name="service" value="'+name+'">';
-    document.body.appendChild(form); form.submit();
+    showToast('Перезапуск ' + name + '...', 'warning');
+    
+    fetch('/api/restart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: name })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            showToast(name + ': успешно перезапущен', 'success');
+            setTimeout(() => {
+                fetch('/api/status')
+                    .then(r => r.json())
+                    .then(statuses => updateServicesUI(statuses));
+            }, 2000);
+        } else {
+            showToast(name + ': ' + data.msg, 'danger');
+        }
+    })
+    .catch(() => {
+        showToast('Ошибка при перезапуске ' + name, 'danger');
+    });
 }
 
 // Chart.js initialization

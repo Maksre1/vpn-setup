@@ -139,6 +139,25 @@ def api_status():
     return jsonify(get_all_service_statuses())
 
 
+@app.route("/api/restart", methods=["POST"])
+@login_required
+def api_restart_service():
+    if request.is_json:
+        data = request.get_json() or {}
+        service = data.get("service")
+    else:
+        service = request.form.get("service")
+
+    if not service:
+        return jsonify({"ok": False, "msg": "Не указан сервис"}), 400
+
+    ok = restart_service(service)
+    return jsonify({
+        "ok": ok,
+        "msg": "Сервис перезапущен" if ok else "Ошибка перезапуска"
+    })
+
+
 # ── Users ────────────────────────────────────────────────────────────────────
 @app.route("/users")
 @login_required
