@@ -21,26 +21,34 @@ def gen_random_path(prefix="sub", ext="txt"):
     return f"{prefix}-{secrets.token_hex(8)}.{ext}"
 
 
-def get_hysteria2_uri(config, server_ip):
+def get_hysteria2_uri(config, server_ip, username=None, password=None):
     """Сформировать hysteria2:// URI."""
-    if not config.get("H2_PASS"):
+    auth_part = config.get("H2_PASS", "")
+    if username and password:
+        auth_part = f"{username}:{password}"
+    elif password:
+        auth_part = password
+
+    if not auth_part:
         return ""
     return (
-        f"hysteria2://{config['H2_PASS']}@{server_ip}:{config.get('H2_PORT', 443)}"
+        f"hysteria2://{auth_part}@{server_ip}:{config.get('H2_PORT', 443)}"
         f"?obfs=salamander&obfs-password={config.get('H2_OBFS_PASS', '')}"
         f"&pinSHA256={config.get('H2_CERT_PIN', '')}"
         f"&sni={config.get('H2_CERT_CN', '')}"
     )
 
 
-def get_mieru_uri(config, server_ip):
+def get_mieru_uri(config, server_ip, username=None, password=None):
     """Сформировать mieru:// URI."""
-    if not config.get("MIERU_PASS"):
+    user = username or config.get("MIERU_USER", "")
+    pwd = password or config.get("MIERU_PASS", "")
+    if not pwd:
         return ""
     return (
         f"mieru://{server_ip}:{config.get('MIERU_PORT', 443)}"
-        f"?username={config.get('MIERU_USER', '')}"
-        f"&password={config['MIERU_PASS']}"
+        f"?username={user}"
+        f"&password={pwd}"
         f"&network=udp#Mieru-Proxy"
     )
 

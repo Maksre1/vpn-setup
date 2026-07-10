@@ -8,13 +8,9 @@
         <div class="panel-body">
             <div style="display:flex; flex-direction:column; gap:8px;">
                 {% for name, unit in [('Mieru','mita'),('Hysteria2','hysteria-server'),('WARP','wg-quick@wgcf-warp'),('fail2ban','fail2ban')] %}
-                <form method="POST" style="margin:0;" onsubmit="return confirm('Вы уверены, что хотите перезапустить {{ name }}? Это временно прервет активные VPN-подключения.')">
-                    <input type="hidden" name="action" value="restart">
-                    <input type="hidden" name="service" value="{{ unit }}">
-                    <button type="submit" class="btn" style="width:100%; justify-content:flex-start; gap:8px;">
-                        <i class="bi bi-arrow-repeat"></i> Перезапустить {{ name }}
-                    </button>
-                </form>
+                <button type="button" class="btn" style="width:100%; justify-content:flex-start; gap:8px; margin:0;" onclick="restartService('{{ name }}', '{{ unit }}')">
+                    <i class="bi bi-arrow-repeat"></i> Перезапустить {{ name }}
+                </button>
                 {% endfor %}
             </div>
         </div>

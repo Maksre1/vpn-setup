@@ -1,0 +1,175 @@
+{{ define "title" }}Настройки{{ end }}
+{{ define "topbar" }}Настройки{{ end }}
+{{ define "content" }}
+
+<div class="grid-2">
+    <!-- Left Column: Security and Backups -->
+    <div style="display:flex; flex-direction:column; gap:20px;">
+        <!-- Admin Password Change -->
+        <div class="panel">
+            <div class="panel-header">Безопасность панели</div>
+            <div class="panel-body">
+                <form id="changePasswordForm" onsubmit="submitChangePassword(event)">
+                    <div class="form-group">
+                        <label>Текущий пароль администратора</label>
+                        <input type="password" name="old_password" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Новый пароль администратора</label>
+                        <input type="password" name="new_password" class="form-control" required minlength="6">
+                    </div>
+                    <button type="submit" class="btn btn-accent" style="margin-top:8px;">Сменить пароль</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Backups and Restore -->
+        <div class="panel">
+            <div class="panel-header">Резервное копирование</div>
+            <div class="panel-body" style="display:flex; flex-direction:column; gap:16px;">
+                <div>
+                    <p style="font-size:12.5px; color:var(--text-secondary); margin-bottom:10px; line-height:1.4;">
+                        Сохраните всех пользователей и настройки в файл резервной копии. Вы сможете восстановить базу на любой другой инсталляции.
+                    </p>
+                    <a href="/settings/backup" class="btn" style="width:100%;"><i class="bi bi-download"></i> Скачать бэкап базы (.db)</a>
+                </div>
+                
+                <div style="border-top:1px solid var(--border); padding-top:16px;">
+                    <label style="display:block; font-size:12.5px; color:var(--text-secondary); margin-bottom:10px;">
+                        Восстановить панель из файла бэкапа:
+                    </label>
+                    <form id="restoreBackupForm" onsubmit="submitRestoreBackup(event)" style="display:flex; gap:8px;">
+                        <input type="file" name="backup_file" accept=".db" class="form-control" required style="font-size:12px; padding:5px 8px;">
+                        <button type="submit" class="btn btn-accent"><i class="bi bi-upload"></i> Восстановить</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Info Panel -->
+        <div class="panel">
+            <div class="panel-header">Информация</div>
+            <div class="panel-body">
+                <div class="metric-row"><span class="metric-label">Версия панели</span><span class="metric-value">Go Edition v1.1.0</span></div>
+                <div class="metric-row"><span class="metric-label">Порт панели (HTTPS)</span><span class="metric-value mono" style="font-weight:600;">{{ .PanelPort }}</span></div>
+                <div class="metric-row"><span class="metric-label">Обновление системы</span><span class="metric-value mono" style="font-size:11px;">vpn-update --status</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right Column: Services & Danger Zone -->
+    <div style="display:flex; flex-direction:column; gap:20px;">
+        <!-- Services List -->
+        <div class="panel">
+            <div class="panel-header">Управление службами</div>
+            <ul class="service-list" id="svcSettingsList">
+                {{ range .Services }}
+                <li class="service-item" style="padding:14px 20px;">
+                    <div style="display:flex; flex-direction:column; gap:2px;">
+                        <span class="service-name" style="font-size:13.5px;">{{ .Name }}</span>
+                        <span class="mono" style="font-size:10.5px; color:var(--text-muted);">{{ .Unit }}.service</span>
+                    </div>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        {{ $svcQuery := "mieru" }}
+                        {{ if eq .Unit "hysteria-server" }}{{ $svcQuery = "hysteria" }}
+                        {{ else if eq .Unit "wg-quick@wgcf-warp" }}{{ $svcQuery = "warp" }}
+                        {{ else if eq .Unit "fail2ban" }}{{ $svcQuery = "fail2ban" }}
+                        {{ else if eq .Unit "vpn-panel" }}{{ $svcQuery = "panel" }}{{ end }}
+                        <a href="/logs?service={{ $svcQuery }}" class="btn btn-sm" title="Просмотр логов"><i class="bi bi-terminal"></i> Логи</a>
+                        <button type="button" class="btn btn-sm" onclick="restartService('{{ .Name }}', '{{ .Unit }}')"><i class="bi bi-arrow-repeat"></i> Рестарт</button>
+                    </div>
+                </li>
+                {{ end }}
+            </ul>
+        </div>
+
+        <!-- Danger Zone -->
+        <div class="panel" style="border-color:var(--red);">
+            <div class="panel-header" style="border-bottom-color:var(--red); color:var(--red);"><i class="bi bi-exclamation-triangle"></i> Опасная зона</div>
+            <div class="panel-body" style="display:flex; flex-direction:column; gap:12px;">
+                <p style="font-size:12.5px; color:var(--text-secondary); line-height:1.4;">
+                    Перезагрузка операционной системы сервера отключит всех клиентов на время перезапуска (обычно 15–30 секунд).
+                </p>
+                <button type="button" class="btn btn-danger" onclick="rebootServer()" style="width:100%;"><i class="bi bi-power"></i> Перезагрузить сервер VPS</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{{ end }}
+
+{{ define "scripts" }}
+<script>
+function submitChangePassword(event) {
+    event.preventDefault();
+    const form = document.getElementById('changePasswordForm');
+    const formData = new FormData(form);
+
+    fetch('/settings/change-password', {
+        method: 'POST',
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        },
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            showToast(data.msg, 'success');
+            form.reset();
+        } else {
+            showToast(data.msg || 'Ошибка смены пароля', 'danger');
+        }
+    })
+    .catch(() => showToast('Произошла ошибка при отправке запроса', 'danger'));
+}
+
+function submitRestoreBackup(event) {
+    event.preventDefault();
+    if (!confirm('Вы уверены? Восстановление перезапишет всю базу данных пользователей и перезапустит службы!')) {
+        return;
+    }
+
+    const form = document.getElementById('restoreBackupForm');
+    const formData = new FormData(form);
+
+    fetch('/settings/restore', {
+        method: 'POST',
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        },
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            showToast(data.msg, 'success');
+            form.reset();
+            setTimeout(() => { loadPage('/users'); }, 1500);
+        } else {
+            showToast(data.msg || 'Ошибка восстановления бэкапа', 'danger');
+        }
+    })
+    .catch(() => showToast('Произошла ошибка при загрузке бэкапа', 'danger'));
+}
+
+function rebootServer() {
+    if (confirm('Вы уверены, что хотите перезагрузить VPS сервер? Это временно отключит всех пользователей VPN.')) {
+        fetch('/api/reboot', {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            }
+        })
+        .then(r => r.json())
+        .then(data => {
+            showToast(data.msg, 'success');
+        })
+        .catch(() => showToast('Запрос отправлен, сервер перезагружается...', 'success'));
+    }
+}
+</script>
+{{ end }}

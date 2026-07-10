@@ -228,15 +228,11 @@ do_update() {
     fi
 
     # Обновляем панель
-    if [[ -d "$src_dir/panel" ]]; then
-        mkdir -p "$PANEL_DIR"/{templates,static,certs}
-        for f in app.py models.py utils.py; do
-            [[ -f "$src_dir/panel/$f" ]] && cp "$src_dir/panel/$f" "$PANEL_DIR/$f"
-        done
-        [[ -d "$src_dir/panel/templates" ]] && cp -r "$src_dir/panel/templates/"* "$PANEL_DIR/templates/"
-        [[ -d "$src_dir/panel/static" ]] && cp -r "$src_dir/panel/static/"* "$PANEL_DIR/static/"
-        ok "Панель обновлена"
-    fi
+    mkdir -p "$PANEL_DIR"
+    curl -fsSL "https://raw.githubusercontent.com/${REPO}/${BRANCH}/panel_go/vpn-panel" -o "$PANEL_DIR/vpn-panel" 2>/dev/null || true
+    curl -fsSL "https://raw.githubusercontent.com/${REPO}/${BRANCH}/panel_go/vpn-sub" -o "$PANEL_DIR/vpn-sub" 2>/dev/null || true
+    chmod +x "$PANEL_DIR/vpn-panel" "$PANEL_DIR/vpn-sub" 2>/dev/null || true
+    ok "Панель обновлена"
 
     # Сохраняем версию
     echo "$remote_ver" > "$VERSION_FILE"
@@ -259,45 +255,17 @@ do_repair() {
         confirm || return 0
     fi
 
-    # 1. Проверяем pip/flask
-    info "Проверка зависимостей панели..."
-    if ! python3 -c "import flask" 2>/dev/null; then
-        warn "Flask не установлен. Установка..."
-        if ! command -v pip3 &>/dev/null; then
-            apt-get install -y -qq python3-pip 2>/dev/null || true
-        fi
-        pip3 install --break-system-packages flask flask-wtf 2>&1 | tail -2 || \
-        pip3 install flask flask-wtf 2>&1 | tail -2 || true
-    fi
-
-    # 2. Проверяем файлы панели
+    # 1. Проверяем файлы панели
     info "Проверка файлов панели..."
     local missing=0
-    for f in app.py models.py utils.py; do
-        if [[ ! -f "$PANEL_DIR/$f" ]]; then
-            warn "Отсутствует: $PANEL_DIR/$f"
-            missing=1
-        fi
-    done
-    for f in base.html login.html dashboard.html users.html user_edit.html keys.html settings.html logs.html; do
-        if [[ ! -f "$PANEL_DIR/templates/$f" ]]; then
-            warn "Отсутствует: $PANEL_DIR/templates/$f"
-            missing=1
-        fi
-    done
+    if [[ ! -f "$PANEL_DIR/vpn-panel" || ! -f "$PANEL_DIR/vpn-sub" ]]; then
+        warn "Отсутствуют бинарные файлы панели"
+        missing=1
+    fi
 
     if [[ "$missing" -eq 1 ]]; then
         info "Скачивание недостающих файлов..."
         do_update
-    fi
-
-    # 3. Проверяем сертификат
-    if [[ ! -f "$PANEL_DIR/certs/server.key" ]]; then
-        warn "Сертификат отсутствует. Генерация..."
-        mkdir -p "$PANEL_DIR/certs"
-        openssl ecparam -genkey -name prime256v1 -out "$PANEL_DIR/certs/server.key" 2>/dev/null
-        openssl req -new -x509 -key "$PANEL_DIR/certs/server.key" -out "$PANEL_DIR/certs/server.crt" \
-            -days 3650 -nodes -subj "/CN=vpn-panel/O=VPN/C=US" 2>/dev/null
     fi
 
     # 4. Проверяем systemd

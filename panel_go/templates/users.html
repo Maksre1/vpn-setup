@@ -1,10 +1,14 @@
-{% extends "base.html" %}
-{% block title %}Пользователи{% endblock %}
-{% block topbar %}Пользователи{% endblock %}
-{% block content %}
-<div class="section-header">
-    <span class="section-title">Пользователи ({{ users|length }})</span>
-    <button class="btn btn-accent" onclick="openAddUserModal()"><i class="bi bi-plus"></i> Добавить</button>
+{{ define "title" }}Пользователи{{ end }}
+{{ define "topbar" }}Пользователи{{ end }}
+{{ define "content" }}
+
+<!-- Header panel in macOS Big Sur style -->
+<div class="section-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <span style="font-size:16px; font-weight:600; color:var(--text);">Пользователи ({{ len .Users }})</span>
+    <div style="display:flex; gap:10px;">
+        <button class="btn btn-accent" onclick="quickCreateUser()"><i class="bi bi-lightning-charge"></i> Быстрое создание</button>
+        <button class="btn" onclick="openAddUserModal()"><i class="bi bi-plus"></i> Создать вручную</button>
+    </div>
 </div>
 
 <div class="panel">
@@ -13,84 +17,80 @@
             <thead>
                 <tr>
                     <th>Имя</th>
-                    <th>Пароль</th>
                     <th>Срок</th>
                     <th>Трафик</th>
                     <th>Скорость</th>
-                    <th>Протокол</th>
+                    <th>Протоколы</th>
                     <th>Статус</th>
                     <th>Действия</th>
                 </tr>
             </thead>
             <tbody>
-            {% for u in users %}
-                <tr>
-                    <td style="font-weight:500;">{{ u.username }}</td>
+            {{ range .Users }}
+                <tr id="userRow{{ .ID }}">
+                    <td style="font-weight:600; color:var(--text);">{{ .Username }}</td>
+                    <td class="mono {{ if .Expired }}tag-red{{ end }}">{{ .ExpireFmt }}</td>
                     <td>
-                        <code class="mono" id="pw{{ u.id }}">{{ u.password[:6] }}***</code>
-                        <button class="btn btn-sm btn-icon" onclick="var el=document.getElementById('pw{{u.id}}');el.textContent=el.textContent.includes('***')?'{{ u.password }}':'{{ u.password[:6] }}***'"><i class="bi bi-eye"></i></button>
-                    </td>
-                    <td class="mono {{ 'tag-red' if u._expired else '' }}">{{ u._expire_fmt }}</td>
-                    <td>
-                        {% set limit_bytes = u.traffic_limit_gb * 1024 * 1024 * 1024 %}
-                        {% if u.traffic_limit_gb > 0 %}
-                            {% set pct = (u.used_traffic_bytes * 100 / limit_bytes) | int %}
-                            {% if pct > 100 %}{% set pct = 100 %}{% endif %}
-                        {% else %}
-                            {% set pct = 0 %}
-                        {% endif %}
-                        <div class="mono" style="font-size:12px; margin-bottom:4px; font-weight:500;">
-                            {{ u.used_traffic_bytes | format_traffic }} / {{ u._traffic_fmt }}
+                        <div class="mono" style="font-size:11.5px; margin-bottom:4px; font-weight:500;">
+                            {{ format_traffic .UsedTrafficBytes }} / {{ .TrafficFmt }}
                         </div>
-                        {% if u.traffic_limit_gb > 0 %}
-                        <div class="progress-bar-wrap" style="width:100%; height:6px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:3px; overflow:hidden;">
-                            <div class="progress-bar" style="width:{{ pct }}%; height:100%; background:{% if pct > 90 %}#ef4444{% elif pct > 75 %}#f59e0b{% else %}var(--accent){% endif %}; border-radius:3px; transition: width 0.3s ease;"></div>
+                        {{ if gt .TrafficLimitGB 0 }}
+                        <div class="progress-bar-wrap" style="width:100%; height:5px; background:rgba(255,255,255,0.05); border:1px solid var(--border); border-radius:2.5px; overflow:hidden;">
+                            <div class="progress-bar" style="width:{{ .Pct }}%; height:100%; background:{{ if gt .Pct 90 }}var(--red){{ else if gt .Pct 75 }}var(--yellow){{ else }}var(--accent){{ end }}; border-radius:2.5px; transition: width 0.3s ease;"></div>
                         </div>
-                        {% endif %}
+                        {{ end }}
                     </td>
-                    <td class="mono">{{ u._speed_fmt }}</td>
+                    <td class="mono">{{ .SpeedFmt }}</td>
                     <td>
-                        {% if u.protocol == 'all' %}<span class="tag tag-green">all</span>
-                        {% elif u.protocol == 'hysteria2' %}<span class="tag" style="background:var(--accent-dim);color:var(--accent);">hy2</span>
-                        {% else %}<span class="tag" style="background:var(--yellow-dim);color:var(--yellow);">mieru</span>{% endif %}
+                        {{ if eq .Protocol "all" }}
+                            <span class="status-dot active" style="font-size:12px;" title="Все протоколы">все</span>
+                        {{ else if eq .Protocol "hysteria2" }}
+                            <span class="status-dot active" style="font-size:12px; color:var(--accent);" title="Hysteria2">hy2</span>
+                        {{ else }}
+                            <span class="status-dot active" style="font-size:12px; color:var(--yellow);" title="Mieru">mieru</span>
+                        {{ end }}
+                        
+                        {{ if eq .RouteWarp 1 }}
+                            <span style="color:var(--accent); font-size:12px; margin-left:8px;" title="Маршрут через WARP"><i class="bi bi-cloud"></i> warp</span>
+                        {{ end }}
                     </td>
                     <td>
-                        {% if u._expired %}
-                            <span class="tag" style="background:rgba(239,68,68,0.1); color:#ef4444;">Истёк</span>
-                        {% elif not u.is_active %}
-                            {% if u.traffic_limit_gb > 0 and u.used_traffic_bytes >= limit_bytes %}
-                                <span class="tag" style="background:rgba(239,68,68,0.15); color:#ef4444; font-weight:600;">Лимит</span>
-                            {% else %}
-                                <span class="tag" style="background:var(--bg-secondary); color:var(--text-secondary);">Выкл</span>
-                            {% endif %}
-                        {% else %}
-                            <span class="tag tag-green">Активен</span>
-                        {% endif %}
+                        {{ if .Expired }}
+                            <span class="status-dot expired">Истёк</span>
+                        {{ else if eq .IsActive 0 }}
+                            {{ $limitBytes := multiply .TrafficLimitGB 1073741824 }}
+                            {{ if and (gt .TrafficLimitGB 0) (ge .UsedTrafficBytes $limitBytes) }}
+                                <span class="status-dot expired">Лимит</span>
+                            {{ else }}
+                                <span class="status-dot inactive">Выкл</span>
+                            {{ end }}
+                        {{ else }}
+                            <span class="status-dot active">Активен</span>
+                        {{ end }}
                     </td>
                     <td style="white-space:nowrap;">
-                        <button class="btn btn-sm btn-accent btn-icon" onclick="showInfoModal('{{ u.username }}', '{{ u.sub_path }}', '{{ u.h2_uri }}', '{{ u.mieru_uri }}')" title="Подключение"><i class="bi bi-qr-code"></i></button>
-                        <button class="btn btn-sm btn-icon" onclick="openEditUserModal({{ u.id }}, '{{ u.username }}', '{{ u.expire_date }}', {{ u.traffic_limit_gb }}, {{ u.speed_limit_mbps }}, '{{ u.protocol }}', {{ u.is_active }}, {{ u.used_traffic_bytes }})" title="Редактировать"><i class="bi bi-pencil"></i></button>
-                        <button class="btn btn-sm btn-icon" onclick="if(confirm('Сбросить пароль для {{u.username}}?')){fetch('/users/{{u.id}}/reset-password',{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest','X-CSRFToken':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content')}}).then(r=>r.json()).then(d=>{if(d.ok){showToast(d.msg,'success');loadPage('/users');}else{showToast(d.msg,'danger');}})}" title="Сбросить пароль"><i class="bi bi-key"></i></button>
-                        <button class="btn btn-sm btn-icon btn-danger" onclick="if(confirm('Удалить {{u.username}}?')){fetch('/users/{{u.id}}/delete',{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest','X-CSRFToken':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content')}}).then(r=>r.json()).then(d=>{if(d.ok){showToast(d.msg,'success');loadPage('/users');}else{showToast(d.msg,'danger');}})}" title="Удалить"><i class="bi bi-trash3"></i></button>
+                        <button class="btn btn-sm btn-accent btn-icon" onclick="showInfoModal('{{ .Username }}', '{{ .SubPath }}', '{{ .H2Uri }}', '{{ .MieruUri }}')" title="Подключение"><i class="bi bi-qr-code"></i></button>
+                        <button class="btn btn-sm btn-icon" onclick="openEditUserModal({{ .ID }}, '{{ .Username }}', '{{ .ExpireDate }}', {{ .TrafficLimitGB }}, {{ .SpeedLimitMbps }}, '{{ .Protocol }}', {{ .IsActive }}, {{ .UsedTrafficBytes }}, {{ .RouteWarp }})" title="Редактировать"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-icon btn-danger" onclick="deleteUser({{ .ID }}, '{{ .Username }}')" title="Удалить"><i class="bi bi-trash3"></i></button>
                     </td>
                 </tr>
-            {% endfor %}
-            {% if not users %}
-                <tr><td colspan="8" class="empty">Нет пользователей</td></tr>
-            {% endif %}
+            {{ end }}
+            {{ if not .Users }}
+                <tr><td colspan="7" class="empty" style="text-align:center; padding:30px; color:var(--text-secondary);">Нет пользователей</td></tr>
+            {{ end }}
             </tbody>
         </table>
     </div>
 </div>
 
 <!-- Connection Info Modal -->
-<div class="modal-overlay" id="infoModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); z-index:1000; align-items:center; justify-content:center;">
-    <div class="panel" style="width:100%; max-width:540px; margin:16px; border-radius:12px; box-shadow:0 8px 32px rgba(0,0,0,0.4); border:1px solid var(--border); overflow:hidden;">
-        <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding:16px;">
-            <span id="modalTitle" style="font-weight:600; font-size:18px;">Подключение</span>
-            <button class="btn btn-sm btn-icon" onclick="closeModal()" style="background:none; border:none; color:var(--text-secondary); cursor:pointer;"><i class="bi bi-x-lg"></i></button>
+<div class="modal-overlay" id="infoModal">
+    <div class="modal">
+        <div class="modal-header">
+            <span id="modalTitle">Подключение</span>
+            <button class="btn btn-sm btn-icon" onclick="closeModal()" style="background:none; border:none; color:var(--text-secondary);"><i class="bi bi-x-lg"></i></button>
         </div>
-        <div class="panel-body" style="padding:20px;">
+        <div class="modal-body" style="padding:20px;">
             <!-- Tabs -->
             <div style="display:flex; gap:8px; border-bottom:1px solid var(--border); margin-bottom:16px; padding-bottom:8px;">
                 <button class="btn tab-btn active" id="tabH2Btn" onclick="switchTab('H2')">Hysteria2</button>
@@ -100,30 +100,30 @@
             
             <!-- Tab Content H2 -->
             <div id="tabContentH2" class="tab-content" style="text-align:center;">
-                <div style="margin:20px auto; width:180px; height:180px; background:#fff; padding:10px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrH2"></div>
-                <div style="display:flex; gap:8px; align-items:center;">
-                    <input type="text" id="uriH2" class="form-control mono" readonly style="font-size:12px; flex-grow:1;">
+                <div style="margin:16px auto; width:170px; height:170px; background:#fff; padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrH2"></div>
+                <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
+                    <input type="text" id="uriH2" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
                     <button class="btn btn-accent btn-icon" onclick="copyField('uriH2')" title="Копировать"><i class="bi bi-copy"></i></button>
                 </div>
             </div>
             
             <!-- Tab Content Mieru -->
             <div id="tabContentMieru" class="tab-content" style="display:none; text-align:center;">
-                <div style="margin:20px auto; width:180px; height:180px; background:#fff; padding:10px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrMieru"></div>
-                <div style="display:flex; gap:8px; align-items:center;">
-                    <input type="text" id="uriMieru" class="form-control mono" readonly style="font-size:12px; flex-grow:1;">
+                <div style="margin:16px auto; width:170px; height:170px; background:#fff; padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrMieru"></div>
+                <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
+                    <input type="text" id="uriMieru" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
                     <button class="btn btn-accent btn-icon" onclick="copyField('uriMieru')" title="Копировать"><i class="bi bi-copy"></i></button>
                 </div>
             </div>
             
             <!-- Tab Content Sub -->
             <div id="tabContentSub" class="tab-content" style="display:none;">
-                <div style="padding:16px; background:var(--bg-secondary); border-radius:8px; margin-bottom:16px; border:1px solid var(--border);">
-                    <p style="font-size:13px; color:var(--text-secondary); margin:0 0 12px 0; line-height:1.5;">
-                        Используйте эту универсальную ссылку подписки для автоматического получения и обновления конфигураций в клиентах V2RayN, Shadowrocket, Sing-box, Karing.
+                <div style="padding:14px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border);">
+                    <p style="font-size:12.5px; color:var(--text-secondary); margin:0 0 10px 0; line-height:1.4;">
+                        Используйте эту ссылку в клиентах (Karing, Sing-box, Clash Verge) для автоматического обновления конфигураций.
                     </p>
                     <div style="display:flex; gap:8px; align-items:center;">
-                        <input type="text" id="subUrl" class="form-control mono" readonly style="font-size:12px; flex-grow:1;">
+                        <input type="text" id="subUrl" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
                         <button class="btn btn-accent btn-icon" onclick="copyField('subUrl')" title="Копировать"><i class="bi bi-copy"></i></button>
                     </div>
                 </div>
@@ -132,30 +132,29 @@
     </div>
 </div>
 
-<!-- Add/Edit User Modal (3x-ui style popup) -->
-<div class="modal-overlay" id="userModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); z-index:1000; align-items:center; justify-content:center;">
-    <div class="panel" style="width:100%; max-width:540px; margin:16px; border-radius:12px; box-shadow:0 8px 32px rgba(0,0,0,0.4); border:1px solid var(--border); overflow:hidden;">
-        <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding:16px;">
-            <span id="userModalTitle" style="font-weight:600; font-size:18px;">Добавить клиента</span>
-            <button class="btn btn-sm btn-icon" onclick="closeUserModal()" style="background:none; border:none; color:var(--text-secondary); cursor:pointer;"><i class="bi bi-x-lg"></i></button>
+<!-- Add/Edit User Modal -->
+<div class="modal-overlay" id="userModal">
+    <div class="modal">
+        <div class="modal-header">
+            <span id="userModalTitle">Добавить клиента</span>
+            <button class="btn btn-sm btn-icon" onclick="closeUserModal()" style="background:none; border:none; color:var(--text-secondary);"><i class="bi bi-x-lg"></i></button>
         </div>
-        <div class="panel-body" style="padding:20px;">
+        <div class="modal-body" style="padding:20px;">
             <form id="userForm" onsubmit="submitUserForm(event)">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}">
                 <input type="hidden" id="formUserId" name="user_id" value="">
                 
                 <div class="form-group" id="usernameGroup">
-                    <label class="form-label">Имя пользователя (Email)</label>
+                    <label>Имя пользователя (Email)</label>
                     <div style="display:flex; gap:8px;">
                         <input type="text" id="formUsername" name="username" class="form-control" required pattern="^[a-zA-Z0-9_-]{3,32}$" placeholder="user123" style="flex-grow:1;">
-                        <button type="button" class="btn btn-icon" id="genUsernameBtn" onclick="generateRandomUsername()" title="Сгенерировать случайное имя" style="padding: 0 12px;"><i class="bi bi-shuffle"></i></button>
+                        <button type="button" class="btn" id="genUsernameBtn" onclick="generateRandomUsername()" style="padding: 0 10px;" title="Сгенерировать имя"><i class="bi bi-shuffle"></i></button>
                     </div>
-                    <small style="color:var(--text-muted); font-size:11px; margin-top:4px; display:block;">Латиница, цифры, дефис и подчеркивание (3-32 символов)</small>
                 </div>
                 
                 <div class="form-group">
-                    <label class="form-label">Срок действия</label>
-                    <select name="expire_preset" class="form-select" id="formExpirePreset" onchange="toggleCustomDate(this.value)">
+                    <label>Срок действия</label>
+                    <select name="expire_preset" class="form-control" id="formExpirePreset" onchange="toggleCustomDate(this.value)">
                         <option value="0">Бессрочно</option>
                         <option value="7">7 дней</option>
                         <option value="30">30 дней</option>
@@ -168,34 +167,41 @@
                 
                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
                     <div class="form-group">
-                        <label class="form-label">Лимит трафика (ГБ)</label>
+                        <label>Лимит трафика (ГБ)</label>
                         <input type="number" name="traffic_limit" id="formTrafficLimit" class="form-control" min="0" value="0">
-                        <small style="color:var(--text-muted); font-size:11px;">0 = безлимит</small>
+                        <small style="color:var(--text-muted); font-size:10.5px; display:block; margin-top:3px;">0 = безлимит</small>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Лимит скорости (Мбит/с)</label>
+                        <label>Лимит скорости (Мбит/с)</label>
                         <input type="number" name="speed_limit" id="formSpeedLimit" class="form-control" min="0" value="0">
-                        <small style="color:var(--text-muted); font-size:11px;">0 = безлимит</small>
+                        <small style="color:var(--text-muted); font-size:10.5px; display:block; margin-top:3px;">0 = безлимит</small>
                     </div>
                 </div>
                 
                 <div class="form-group">
-                    <label class="form-label">Протокол</label>
-                    <select name="protocol" id="formProtocol" class="form-select">
+                    <label>Протокол</label>
+                    <select name="protocol" id="formProtocol" class="form-control">
                         <option value="all">Все (Hysteria2 + Mieru)</option>
                         <option value="hysteria2">Hysteria2</option>
                         <option value="mieru">Mieru</option>
                     </select>
                 </div>
-                
-                <div class="form-group" id="editOptionsGroup" style="display:none; flex-direction:column; gap:12px; margin-top:16px; padding:12px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:8px;">
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-                        <input type="checkbox" name="is_active" id="formIsActive" style="accent-color:var(--accent);">
-                        <span class="form-label" style="margin:0;">Активен</span>
+
+                <div class="form-group">
+                    <label style="display:flex; align-items:center; gap:10px; cursor:pointer; margin-top:8px;">
+                        <input type="checkbox" name="route_warp" id="formRouteWarp" value="1" style="width:16px; height:16px; accent-color:var(--accent);">
+                        <span style="font-weight:500; font-size:13px;">Направлять трафик через Cloudflare WARP</span>
                     </label>
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-                        <input type="checkbox" name="reset_traffic" id="formResetTraffic" style="accent-color:var(--accent);">
-                        <span class="form-label" style="margin:0; color:var(--text-secondary);" id="formResetTrafficLabel">Сбросить расход трафика</span>
+                </div>
+                
+                <div class="form-group" id="editOptionsGroup" style="display:none; flex-direction:column; gap:10px; margin-top:16px; padding:12px; background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:8px;">
+                    <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+                        <input type="checkbox" name="is_active" id="formIsActive" style="width:16px; height:16px; accent-color:var(--accent);">
+                        <span style="font-weight:500;">Активен</span>
+                    </label>
+                    <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+                        <input type="checkbox" name="reset_traffic" id="formResetTraffic" style="width:16px; height:16px; accent-color:var(--accent);">
+                        <span id="formResetTrafficLabel" style="font-weight:500; color:var(--text-secondary);">Сбросить расход трафика</span>
                     </label>
                 </div>
                 
@@ -212,39 +218,37 @@
 .tab-btn {
     background: transparent;
     border: none;
-    padding: 8px 16px;
+    padding: 6px 12px;
     font-weight: 500;
     cursor: pointer;
     color: var(--text-secondary);
     border-radius: 6px;
+    transition: all 0.15s ease;
 }
 .tab-btn.active {
-    background: var(--bg-secondary);
+    background: var(--bg-raised);
     color: var(--accent);
     box-shadow: inset 0 0 0 1px var(--border);
 }
 .tab-btn:hover:not(.active) {
-    background: var(--bg-secondary);
-    color: var(--text-primary);
+    background: rgba(255,255,255,0.05);
+    color: var(--text);
 }
 </style>
-{% endblock %}
+{{ end }}
 
-{% block scripts %}
+{{ define "scripts" }}
 <script>
-// UI MODAL CONNECTIONS
 function showInfoModal(username, subPath, h2Uri, mieruUri) {
     document.getElementById('modalTitle').textContent = 'Подключение — ' + username;
     
-    // Ссылки
     document.getElementById('uriH2').value = h2Uri || 'Не настроено (протокол отключен)';
     document.getElementById('uriMieru').value = mieruUri || 'Не настроено (протокол отключен)';
     
-    const serverIp = "{{ server_ip }}";
+    const serverIp = "{{ .ServerIP }}";
     const subUrlVal = 'http://' + serverIp + ':8080/' + subPath;
     document.getElementById('subUrl').value = subUrlVal;
     
-    // QR-коды
     const qrH2Container = document.getElementById('qrH2');
     const qrMieruContainer = document.getElementById('qrMieru');
     
@@ -267,15 +271,14 @@ function showInfoModal(username, subPath, h2Uri, mieruUri) {
         qrMieruContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Mieru отключен</span>';
     }
     
-    document.getElementById('infoModal').style.display = 'flex';
+    document.getElementById('infoModal').classList.add('active');
     switchTab('H2');
 }
 
 function closeModal() {
-    document.getElementById('infoModal').style.display = 'none';
+    document.getElementById('infoModal').classList.remove('active');
 }
 
-// Close connection modal on overlay click
 document.getElementById('infoModal').addEventListener('click', function(e) {
     if (e.target === this) {
         closeModal();
@@ -303,12 +306,10 @@ function copyField(id) {
     }
 }
 
-// UI MODAL ADD/EDIT USER (3x-ui style)
 function openAddUserModal() {
     document.getElementById('userModalTitle').textContent = 'Добавить клиента';
     document.getElementById('formUserId').value = '';
     
-    // Enable username field and generate button
     const usernameInput = document.getElementById('formUsername');
     usernameInput.value = '';
     usernameInput.disabled = false;
@@ -320,25 +321,23 @@ function openAddUserModal() {
     document.getElementById('formTrafficLimit').value = '0';
     document.getElementById('formSpeedLimit').value = '0';
     document.getElementById('formProtocol').value = 'all';
+    document.getElementById('formRouteWarp').checked = true; // default WARP enabled
     
-    // Hide edit options (status toggle, reset stats)
     document.getElementById('editOptionsGroup').style.display = 'none';
     document.getElementById('submitUserBtn').textContent = 'Создать';
     
-    document.getElementById('userModal').style.display = 'flex';
+    document.getElementById('userModal').classList.add('active');
 }
 
-function openEditUserModal(id, username, expireDate, trafficLimit, speedLimit, protocol, isActive, usedTraffic) {
+function openEditUserModal(id, username, expireDate, trafficLimit, speedLimit, protocol, isActive, usedTraffic, routeWarp) {
     document.getElementById('userModalTitle').textContent = 'Редактировать клиента — ' + username;
     document.getElementById('formUserId').value = id;
     
-    // Disable username field and hide generate button
     const usernameInput = document.getElementById('formUsername');
     usernameInput.value = username;
-    usernameInput.disabled = true; // prevent editing name
+    usernameInput.disabled = true;
     document.getElementById('genUsernameBtn').style.display = 'none';
     
-    // Set expiry preset based on expiry date
     const preset = document.getElementById('formExpirePreset');
     if (expireDate === 'never' || expireDate === '' || expireDate === 'None') {
         preset.value = '0';
@@ -352,13 +351,12 @@ function openEditUserModal(id, username, expireDate, trafficLimit, speedLimit, p
     document.getElementById('formTrafficLimit').value = trafficLimit;
     document.getElementById('formSpeedLimit').value = speedLimit;
     document.getElementById('formProtocol').value = protocol;
+    document.getElementById('formRouteWarp').checked = (routeWarp === 1);
     
-    // Show edit options (status toggle, reset stats)
     document.getElementById('editOptionsGroup').style.display = 'flex';
     document.getElementById('formIsActive').checked = (isActive === 1);
     document.getElementById('formResetTraffic').checked = false;
     
-    // Format current traffic consumed in helper text
     let formattedTraffic = '0 Б';
     if (usedTraffic > 0) {
         if (usedTraffic >= 1024*1024*1024) {
@@ -374,14 +372,13 @@ function openEditUserModal(id, username, expireDate, trafficLimit, speedLimit, p
     document.getElementById('formResetTrafficLabel').textContent = 'Сбросить расход трафика (потрачено: ' + formattedTraffic + ')';
     
     document.getElementById('submitUserBtn').textContent = 'Сохранить';
-    document.getElementById('userModal').style.display = 'flex';
+    document.getElementById('userModal').classList.add('active');
 }
 
 function closeUserModal() {
-    document.getElementById('userModal').style.display = 'none';
+    document.getElementById('userModal').classList.remove('active');
 }
 
-// Close user modal on overlay click
 document.getElementById('userModal').addEventListener('click', function(e) {
     if (e.target === this) {
         closeUserModal();
@@ -401,6 +398,56 @@ function generateRandomUsername() {
     document.getElementById('formUsername').value = 'user_' + result;
 }
 
+function quickCreateUser() {
+    fetch('/users/quick', {
+        method: 'POST',
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            showToast(data.msg, 'success');
+            // Refresh table list
+            loadPage('/users');
+            // Show Connection credentials immediately
+            setTimeout(() => {
+                showInfoModal(data.username, data.sub_path, data.h2_uri, data.mieru_uri);
+            }, 300);
+        } else {
+            showToast(data.msg || 'Ошибка создания', 'danger');
+        }
+    })
+    .catch(err => {
+        console.error(err);
+        showToast('Произошла ошибка при быстром создании', 'danger');
+    });
+}
+
+function deleteUser(id, username) {
+    if (confirm('Вы уверены, что хотите удалить пользователя ' + username + '?')) {
+        fetch('/users/' + id + '/delete', {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            }
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.ok) {
+                showToast(data.msg, 'success');
+                loadPage('/users');
+            } else {
+                showToast(data.msg || 'Ошибка при удалении', 'danger');
+            }
+        })
+        .catch(() => showToast('Произошла ошибка при удалении', 'danger'));
+    }
+}
+
 function submitUserForm(event) {
     event.preventDefault();
     const id = document.getElementById('formUserId').value;
@@ -408,9 +455,12 @@ function submitUserForm(event) {
     const url = isEdit ? '/users/' + id + '/edit' : '/users/add';
     
     const formData = new FormData(document.getElementById('userForm'));
-    // Username field is disabled when editing, so we add it manually to send to Flask
     if (isEdit) {
         formData.append('username', document.getElementById('formUsername').value);
+    }
+    // Handle checkbox route_warp manually since FormData doesn't submit unchecked checkboxes
+    if (!formData.has('route_warp')) {
+        formData.append('route_warp', '0');
     }
     
     fetch(url, {
@@ -426,7 +476,6 @@ function submitUserForm(event) {
         if (data.ok) {
             closeUserModal();
             showToast(data.msg, 'success');
-            // Dynamically refresh users list page via PJAX without full page reload
             loadPage('/users');
         } else {
             showToast(data.msg || 'Ошибка операции', 'danger');
@@ -438,4 +487,4 @@ function submitUserForm(event) {
     });
 }
 </script>
-{% endblock %}
+{{ end }}

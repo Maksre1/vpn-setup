@@ -1,0 +1,126 @@
+{{ define "title" }}Логи{{ end }}
+{{ define "topbar" }}Логи{{ end }}
+{{ define "content" }}
+
+<div class="panel" style="display:flex; flex-direction:column; min-height: calc(100vh - 140px);">
+    <!-- Log controls header -->
+    <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            {{ range .Services }}
+            <a href="/logs?service={{ .Svc }}&lines={{ $.Lines }}" class="btn btn-sm {{ if eq $.Selected .Svc }}btn-accent{{ end }}">{{ .Name }}</a>
+            {{ end }}
+        </div>
+        
+        <div style="display:flex; align-items:center; gap:16px;">
+            <!-- Local Search Filter -->
+            <input type="text" id="logFilter" class="form-control" placeholder="Поиск в логах..." style="max-width:180px; font-size:12px; padding:4px 8px;">
+
+            <!-- Lines selector -->
+            <select id="linesSelect" onchange="changeLines(this.value)" class="form-control" style="width:100px; font-size:12px; padding:4px 8px; cursor:pointer;">
+                <option value="50" {{ if eq .Lines 50 }}selected{{ end }}>50 строк</option>
+                <option value="100" {{ if eq .Lines 100 }}selected{{ end }}>100 строк</option>
+                <option value="200" {{ if eq .Lines 200 }}selected{{ end }}>200 строк</option>
+                <option value="500" {{ if eq .Lines 500 }}selected{{ end }}>500 строк</option>
+            </select>
+
+            <!-- Auto-refresh switch -->
+            <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; font-size:12.5px; user-select:none;">
+                <input type="checkbox" id="autoRefreshLog" style="width:15px; height:15px; accent-color:var(--accent);">
+                <span>Автообновление</span>
+            </label>
+            
+            <button class="btn btn-sm" onclick="refreshLogs()"><i class="bi bi-arrow-clockwise"></i> Обновить</button>
+        </div>
+    </div>
+
+    <!-- Terminal Box -->
+    <div style="flex-grow:1; background:#0c0c0e; border-top:1px solid var(--border); padding:16px; position:relative; overflow:hidden;">
+        <pre class="mono" id="logTextContainer" style="margin:0; font-size:12px; line-height:1.6; color:#a1a1aa; white-space:pre-wrap; word-break:break-all; overflow-y:auto; max-height: calc(100vh - 220px); height:100%;">{{ .LogText }}</pre>
+    </div>
+</div>
+
+{{ end }}
+
+{{ define "scripts" }}
+<script>
+// Auto scroll logs to bottom
+const logBox = document.getElementById('logTextContainer');
+if (logBox) logBox.scrollTop = logBox.scrollHeight;
+
+let rawLogs = logBox ? logBox.textContent : '';
+
+function refreshLogs() {
+    const service = '{{ .Selected }}';
+    const lines = document.getElementById('linesSelect').value;
+    
+    fetch(`/api/logs/${service}?lines=${lines}`)
+        .then(r => r.json())
+        .then(data => {
+            rawLogs = data.logs;
+            applyLogFilter();
+        })
+        .catch(() => showToast('Ошибка при загрузке логов', 'danger'));
+}
+
+function changeLines(lines) {
+    const service = '{{ .Selected }}';
+    loadPage(`/logs?service=${service}&lines=${lines}`);
+}
+
+// Local logs search filter
+const filterInput = document.getElementById('logFilter');
+if (filterInput) {
+    filterInput.addEventListener('input', applyLogFilter);
+}
+
+function applyLogFilter() {
+    const val = filterInput ? filterInput.value.toLowerCase().trim() : '';
+    if (!logBox) return;
+
+    if (!val) {
+        logBox.textContent = rawLogs;
+    } else {
+        const lines = rawLogs.split('\n');
+        const filteredLines = lines.filter(line => line.toLowerCase().includes(val));
+        logBox.textContent = filteredLines.join('\n');
+    }
+    
+    // Auto-scroll to bottom of filtered logs
+    logBox.scrollTop = logBox.scrollHeight;
+}
+
+// Auto-refresh interval (polling every 2 seconds)
+(function() {
+    let refreshInterval = null;
+
+    function startInterval() {
+        refreshInterval = setInterval(() => {
+            const checkbox = document.getElementById('autoRefreshLog');
+            if (checkbox && checkbox.checked) {
+                const service = '{{ .Selected }}';
+                const lines = document.getElementById('linesSelect').value;
+                
+                fetch(`/api/logs/${service}?lines=${lines}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        rawLogs = data.logs;
+                        const isScrolledToBottom = logBox.scrollHeight - logBox.clientHeight <= logBox.scrollTop + 30;
+                        applyLogFilter();
+                        if (isScrolledToBottom) {
+                            logBox.scrollTop = logBox.scrollHeight;
+                        }
+                    });
+            }
+        }, 2000);
+    }
+
+    startInterval();
+
+    // Clean up interval on PJAX page replaces
+    document.addEventListener('pjax:beforeReplace', function cleanup() {
+        if (refreshInterval) clearInterval(refreshInterval);
+        document.removeEventListener('pjax:beforeReplace', cleanup);
+    }, { once: true });
+})();
+</script>
+{{ end }}

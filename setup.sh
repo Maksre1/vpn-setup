@@ -34,6 +34,7 @@ readonly MIERU_CONFIG_DIR="/etc/mita"
 readonly H2_CONFIG_DIR="/etc/hysteria"
 readonly H2_CERT_DIR="/etc/hysteria/certs"
 readonly INFO_FILE="/root/vpn-setup-info.txt"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Рандомный путь для подписки (для безопасности — не угадать URL)
 SUB_PATH="$(openssl rand -hex 16)"
@@ -575,6 +576,15 @@ install_mieru() {
 }
 EOF
 
+    # Создаем override для mita.service, чтобы решить проблему с удалением /run/mita после перезагрузки
+    mkdir -p /etc/systemd/system/mita.service.d
+    cat > /etc/systemd/system/mita.service.d/override.conf <<EOF
+[Service]
+RuntimeDirectory=mita
+RuntimeDirectoryMode=0755
+EOF
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+
     systemctl enable mita >> "$LOG_FILE" 2>&1 || true
     systemctl restart mita >> "$LOG_FILE" 2>&1 || systemctl start mita >> "$LOG_FILE" 2>&1 || true
     sleep 2
@@ -662,8 +672,9 @@ tls:
   cert: ${H2_CERT_DIR}/server.crt
   key:  ${H2_CERT_DIR}/server.key
 auth:
-  type: password
-  password: ${H2_PASS}
+  type: userpass
+  userpass:
+    admin: ${H2_PASS}
 obfs:
   type: salamander
   salamander:
@@ -676,6 +687,9 @@ quic:
   maxIdleTimeout: 30s
   maxIncomingStreams: 1024
   disablePathMTUDiscovery: false
+stats:
+  bind: 127.0.0.1:25413
+  secret: hysteria_stats_secret
 EOF
 
     if ! id hysteria &>/dev/null; then
@@ -919,8 +933,12 @@ EOF
     if [[ -n "$mita_uid" ]]; then
         iptables -t mangle -D OUTPUT -m owner --uid-owner "$mita_uid" -j MARK --set-mark 0x1 2>/dev/null || true
     fi
-    if [[ -n "$hysteria_uid" ]]; then
-        iptables -t mangle -D OUTPUT -m owner --uid-owner "$hysteria_uid" -j MARK --set-mark 0x1 2>/dev/null || true
+    if [[ -n "$endpoint_ip" ]]; then
+        if [[ "$endpoint_ip" =~ : ]]; then
+            ip6tables -t mangle -D OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
+        else
+            iptables -t mangle -D OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
+        fi
     fi
 
     # Накатываем новые правила
@@ -946,11 +964,9 @@ EOF
     if [[ -n "$mita_uid" ]]; then
         iptables -t mangle -A OUTPUT -m owner --uid-owner "$mita_uid" -j MARK --set-mark 0x1
     fi
-    if [[ -n "$hysteria_uid" ]]; then
-        iptables -t mangle -A OUTPUT -m owner --uid-owner "$hysteria_uid" -j MARK --set-mark 0x1
-    fi
 
     ip rule add fwmark 0x1 table 200 priority 100 2>/dev/null || true
+    ip rule add from 172.16.0.2 table 200 priority 90 2>/dev/null || true
 
     # Включаем маскарадинг в NAT
     iptables -t nat -D POSTROUTING -o wgcf-warp -j MASQUERADE 2>/dev/null || true
@@ -1080,16 +1096,31 @@ setup_subscription_server() {
     chown vpnsub:vpnsub /var/www/html || true
     chmod 755 /var/www/html || true
 
+    local panel_dir="/opt/vpn-panel"
+    systemctl stop vpn-sub 2>/dev/null || true
+
+    # Удаление старого скрипта python
+    rm -f "${panel_dir}/subscription_server.py"
+
+    # Копирование Go бинарника vpn-sub
+    local local_binary="${SCRIPT_DIR}/panel_go/vpn-sub"
+    if [[ -f "$local_binary" ]]; then
+        cp "$local_binary" "${panel_dir}/vpn-sub"
+    else
+        curl -fsSL "https://raw.githubusercontent.com/Maksre1/vpn-setup/main/panel_go/vpn-sub" -o "${panel_dir}/vpn-sub" >> "$LOG_FILE" 2>&1 || true
+    fi
+    chmod +x "${panel_dir}/vpn-sub"
+
     cat > /etc/systemd/system/vpn-sub.service <<EOF
 [Unit]
-Description=VPN Subscription Web Server
+Description=VPN Subscription Web Server (Go Edition)
 After=network.target
 
 [Service]
 Type=simple
 User=vpnsub
 WorkingDirectory=/var/www/html
-ExecStart=/usr/bin/python3 -m http.server 8080
+ExecStart=${panel_dir}/vpn-sub
 Restart=always
 RestartSec=3s
 
@@ -1518,47 +1549,7 @@ do_add_user() {
         printf "  ${RED}✗${NC}  Использование: setup.sh --add-user <имя>\n"
         exit 1
     fi
-
-    local users_file="$STATE_DIR/vpn-users.conf"
-    mkdir -p "$STATE_DIR"
-
-    if grep -q "^${username}|" "$users_file" 2>/dev/null; then
-        printf "  ${YELLOW}!${NC}  Пользователь '%s' уже существует.\n" "$username"
-        return 0
-    fi
-
-    local password
-    password=$(openssl rand -base64 22 | tr -d '/+=' | head -c 24)
-
-    echo "${username}|${password}" >> "$users_file"
-    chmod 600 "$users_file"
-
-    # Обновляем конфиг Mieru с новым пользователем
-    if [[ -f "$STATE_DIR/mieru.env" ]]; then
-        source "$STATE_DIR/mieru.env"
-        local users_json=""
-        while IFS='|' read -r uname upass; do
-            [[ -n "$uname" ]] && users_json+="{\"name\":\"${uname}\",\"password\":\"${upass}\"},"
-        done < "$users_file"
-        users_json="[${users_json%,}]"
-
-        cat > /tmp/mita_users_config.json <<EOF
-{
-    "portBindings": [
-        {"port": ${MIERU_PORT}, "protocol": "TCP"},
-        {"port": ${MIERU_UDP_PORT}, "protocol": "UDP"}
-    ],
-    "users": ${users_json},
-    "loggingLevel": "WARN",
-    "mtu": 1400
-}
-EOF
-        mita apply config /tmp/mita_users_config.json 2>/dev/null || true
-        rm -f /tmp/mita_users_config.json
-        systemctl restart mita 2>/dev/null || true
-    fi
-
-    printf "  ${GREEN}✔${NC}  Пользователь '%s' добавлен. Пароль: ${BOLD}%s${NC}\n\n" "$username" "$password"
+    /opt/vpn-panel/vpn-panel add "$username"
 }
 
 do_remove_user() {
@@ -1567,107 +1558,31 @@ do_remove_user() {
         printf "  ${RED}✗${NC}  Использование: setup.sh --remove-user <имя>\n"
         exit 1
     fi
-
-    local users_file="$STATE_DIR/vpn-users.conf"
-    if [[ ! -f "$users_file" ]] || ! grep -q "^${username}|" "$users_file" 2>/dev/null; then
-        printf "  ${YELLOW}!${NC}  Пользователь '%s' не найден.\n" "$username"
-        return 0
-    fi
-
-    sed -i "/^${username}|/d" "$users_file"
-
-    # Обновляем конфиг Mieru
-    if [[ -f "$STATE_DIR/mieru.env" ]]; then
-        source "$STATE_DIR/mieru.env"
-        local users_json=""
-        if [[ -s "$users_file" ]]; then
-            while IFS='|' read -r uname upass _rest; do
-                [[ -n "$uname" ]] && users_json+="{\"name\":\"${uname}\",\"password\":\"${upass}\"},"
-            done < "$users_file"
-            users_json="[${users_json%,}]"
-        else
-            users_json="[]"
-        fi
-
-        cat > /tmp/mita_users_config.json <<EOF
-{
-    "portBindings": [
-        {"port": ${MIERU_PORT}, "protocol": "TCP"},
-        {"port": ${MIERU_UDP_PORT}, "protocol": "UDP"}
-    ],
-    "users": ${users_json},
-    "loggingLevel": "WARN",
-    "mtu": 1400
-}
-EOF
-        mita apply config /tmp/mita_users_config.json 2>/dev/null || true
-        rm -f /tmp/mita_users_config.json
-        systemctl restart mita 2>/dev/null || true
-    fi
-
-    printf "  ${GREEN}✔${NC}  Пользователь '%s' удалён.\n\n" "$username"
+    /opt/vpn-panel/vpn-panel remove "$username"
 }
 
 # =============================================================================
 # SHOW KEYS — вывод всех ключей и ссылок
 # =============================================================================
 do_show_keys() {
-    printf "\n  ${BOLD}${CYAN}VPN Server — Мои ключи${NC}\n"
+    printf "\n  ${BOLD}${CYAN}VPN Server — Информация о панели${NC}\n"
     printf "  %s\n\n" "──────────────────────────────────────────────────────────"
 
     local server_ip
     server_ip=$(get_server_ip)
 
-    # Загружаем конфиги
-    if [[ -f "$STATE_DIR/mieru.env" ]]; then source "$STATE_DIR/mieru.env"; fi
-    if [[ -f "$STATE_DIR/hysteria2.env" ]]; then source "$STATE_DIR/hysteria2.env"; fi
-    if [[ -f "$STATE_DIR/subscription_path" ]]; then source "$STATE_DIR/subscription_path"; fi
-
-    # Ссылки
-    printf "  ${BOLD}Ссылки для подключения:${NC}\n\n"
-    printf "  ${CYAN}Karing / Sing-box:${NC}\n"
-    printf "  → http://%s:8080/singbox.json\n\n" "$server_ip"
-    printf "  ${CYAN}Clash Verge / Mihomo:${NC}\n"
-    printf "  → http://%s:8080/%s\n\n" "$server_ip" "${CLASH_PATH:-clash.yaml}"
-    printf "  ${CYAN}V2Ray (единая подписка):${NC}\n"
-    printf "  → http://%s:8080/%s\n\n" "$server_ip" "${SUB_PATH:-sub.txt}"
-
-    # Ключи
-    printf "  ${BOLD}Ключи:${NC}\n\n"
-    if [[ -n "${MIERU_URI:-}" ]]; then
-        printf "  ${CYAN}Mieru:${NC}  порт %s (TCP) / %s (UDP)\n" "${MIERU_PORT:-?}" "${MIERU_UDP_PORT:-?}"
-        printf "  URI: %s\n\n" "$MIERU_URI"
-    fi
-    if [[ -n "${H2_URI:-}" ]]; then
-        printf "  ${CYAN}Hysteria2:${NC} порт %s (UDP)\n" "${H2_PORT:-?}"
-        printf "  URI: %s\n\n" "$H2_URI"
-    fi
-
-    # Пользователи
-    local users_file="$STATE_DIR/vpn-users.conf"
-    if [[ -f "$users_file" ]] && [[ -s "$users_file" ]]; then
-        printf "  ${BOLD}Пользователи:${NC}\n\n"
-        printf "  ${BOLD}%-15s %-12s %-12s %-10s %-10s${NC}\n" "Имя" "Срок" "Трафик" "Скорость" "Протокол"
-        printf "  %s\n" "──────────────────────────────────────────────────────────"
-        while IFS='|' -r read -r uname upass uexpire utraffic uspeed uproto; do
-            [[ -z "$uname" ]] && continue
-            local expire_display="${uexpire:-бессрочно}"
-            local traffic_display="${utraffic:-безлимит}"
-            local speed_display="${uspeed:-безлимит}"
-            local proto_display="${uproto:-all}"
-            # Проверяем срок действия
-            if [[ "$expire_display" != "never" && "$expire_display" != "бессрочно" ]]; then
-                local expire_epoch
-                expire_epoch=$(date -d "$expire_display" +%s 2>/dev/null || echo 0)
-                local now_epoch
-                now_epoch=$(date +%s)
-                if [[ "$expire_epoch" -gt 0 && "$expire_epoch" -lt "$now_epoch" ]]; then
-                    expire_display="${RED}истёк${NC}"
-                fi
-            fi
-            printf "  %-15s %-22b %-12s %-10s %-10s\n" "$uname" "$expire_display" "$traffic_display" "$speed_display" "$proto_display"
-        done < "$users_file"
-        printf "\n"
+    # VPN Panel
+    if [[ -f "$STATE_DIR/panel.env" ]]; then
+        source "$STATE_DIR/panel.env"
+        local panel_pass=""
+        if [[ -f "/etc/vpn-panel/admin_password.txt" ]]; then
+            panel_pass=$(grep "admin:" /etc/vpn-panel/admin_password.txt | cut -d: -f2)
+        fi
+        printf "  ${BOLD}VPN Panel:${NC}\n"
+        printf "  → https://%s:%s\n" "$server_ip" "${PANEL_PORT:-?}"
+        printf "  Логин: ${BOLD}admin${NC}  Пароль: ${BOLD}%s${NC}\n\n" "${panel_pass:-?}"
+        printf "  Для управления пользователями и просмотра QR-кодов/ссылок\n"
+        printf "  используйте веб-интерфейс панели.\n\n"
     fi
 
     # Полный файл с креденциалами
@@ -1713,22 +1628,11 @@ do_add_user_interactive() {
     printf "\n  ${BOLD}${CYAN}Добавление пользователя${NC}\n"
     printf "  %s\n\n" "──────────────────────────────────────────────────────────"
 
-    # Имя
     read -rp "  Имя пользователя: " username
     if [[ -z "$username" ]]; then
         printf "  ${RED}✗${NC}  Имя не может быть пустым.\n\n"
         return 1
     fi
-
-    local users_file="$STATE_DIR/vpn-users.conf"
-    mkdir -p "$STATE_DIR"
-    if grep -q "^${username}|" "$users_file" 2>/dev/null; then
-        printf "  ${YELLOW}!${NC}  Пользователь '%s' уже существует.\n\n" "$username"
-        return 0
-    fi
-
-    local password
-    password=$(openssl rand -base64 22 | tr -d '/+=' | head -c 24)
 
     # Срок действия
     printf "\n  ${BOLD}Срок действия:${NC}\n"
@@ -1741,16 +1645,15 @@ do_add_user_interactive() {
     read -rp "  Выбор [0-5, по умолчанию 0]: " expire_choice
     expire_choice="${expire_choice:-0}"
 
-    local expire_date="never"
-    local expire_display="бессрочно"
+    local expire_param="never"
     case "$expire_choice" in
-        1) expire_date=$(date -d "+7 days" +%Y-%m-%d 2>/dev/null || date -v+7d +%Y-%m-%d 2>/dev/null); expire_display="7 дней" ;;
-        2) expire_date=$(date -d "+30 days" +%Y-%m-%d 2>/dev/null || date -v+30d +%Y-%m-%d 2>/dev/null); expire_display="30 дней" ;;
-        3) expire_date=$(date -d "+90 days" +%Y-%m-%d 2>/dev/null || date -v+90d +%Y-%m-%d 2>/dev/null); expire_display="90 дней" ;;
-        4) expire_date=$(date -d "+365 days" +%Y-%m-%d 2>/dev/null || date -v+365d +%Y-%m-%d 2>/dev/null); expire_display="365 дней" ;;
+        1) expire_param=$(date -d "+7 days" +%Y-%m-%d 2>/dev/null || date -v+7d +%Y-%m-%d 2>/dev/null) ;;
+        2) expire_param=$(date -d "+30 days" +%Y-%m-%d 2>/dev/null || date -v+30d +%Y-%m-%d 2>/dev/null) ;;
+        3) expire_param=$(date -d "+90 days" +%Y-%m-%d 2>/dev/null || date -v+90d +%Y-%m-%d 2>/dev/null) ;;
+        4) expire_param=$(date -d "+365 days" +%Y-%m-%d 2>/dev/null || date -v+365d +%Y-%m-%d 2>/dev/null) ;;
         5) read -rp "  Дата окончания (YYYY-MM-DD): " expire_date
-           expire_display="$expire_date" ;;
-        *) expire_date="never"; expire_display="бессрочно" ;;
+           expire_param="$expire_date" ;;
+        *) expire_param="never" ;;
     esac
 
     # Лимит трафика
@@ -1764,15 +1667,14 @@ do_add_user_interactive() {
     read -rp "  Выбор [0-5, по умолчанию 0]: " traffic_choice
     traffic_choice="${traffic_choice:-0}"
 
-    local traffic_limit="unlimited"
-    local traffic_display="безлимит"
+    local traffic_param=0
     case "$traffic_choice" in
-        1) traffic_limit="10"; traffic_display="10 ГБ" ;;
-        2) traffic_limit="50"; traffic_display="50 ГБ" ;;
-        3) traffic_limit="100"; traffic_display="100 ГБ" ;;
-        4) traffic_limit="500"; traffic_display="500 ГБ" ;;
-        5) read -rp "  Объём (ГБ): " traffic_limit; traffic_display="${traffic_limit} ГБ" ;;
-        *) traffic_limit="unlimited"; traffic_display="безлимит" ;;
+        1) traffic_param=10 ;;
+        2) traffic_param=50 ;;
+        3) traffic_param=100 ;;
+        4) traffic_param=500 ;;
+        5) read -rp "  Объём (ГБ): " traffic_param ;;
+        *) traffic_param=0 ;;
     esac
 
     # Лимит скорости
@@ -1785,14 +1687,13 @@ do_add_user_interactive() {
     read -rp "  Выбор [0-4, по умолчанию 0]: " speed_choice
     speed_choice="${speed_choice:-0}"
 
-    local speed_limit="unlimited"
-    local speed_display="безлимит"
+    local speed_param=0
     case "$speed_choice" in
-        1) speed_limit="10"; speed_display="10 Мбит/с" ;;
-        2) speed_limit="50"; speed_display="50 Мбит/с" ;;
-        3) speed_limit="100"; speed_display="100 Мбит/с" ;;
-        4) read -rp "  Скорость (Мбит/с): " speed_limit; speed_display="${speed_limit} Мбит/с" ;;
-        *) speed_limit="unlimited"; speed_display="безлимит" ;;
+        1) speed_param=10 ;;
+        2) speed_param=50 ;;
+        3) speed_param=100 ;;
+        4) read -rp "  Скорость (Мбит/с): " speed_param ;;
+        *) speed_param=0 ;;
     esac
 
     # Протокол
@@ -1803,66 +1704,25 @@ do_add_user_interactive() {
     read -rp "  Выбор [0-2, по умолчанию 0]: " proto_choice
     proto_choice="${proto_choice:-0}"
 
-    local proto_limit="all"
-    local proto_display="все"
+    local proto_param="all"
     case "$proto_choice" in
-        1) proto_limit="hysteria2"; proto_display="Hysteria2" ;;
-        2) proto_limit="mieru"; proto_display="Mieru" ;;
-        *) proto_limit="all"; proto_display="все" ;;
+        1) proto_param="hysteria2" ;;
+        2) proto_param="mieru" ;;
+        *) proto_param="all" ;;
     esac
 
-    # Сохраняем пользователя
-    echo "${username}|${password}|${expire_date}|${traffic_limit}|${speed_limit}|${proto_limit}" >> "$users_file"
-    chmod 600 "$users_file"
+    # Вызываем Go CLI для добавления пользователя
+    /opt/vpn-panel/vpn-panel add "$username" \
+        --expire "$expire_param" \
+        --traffic "$traffic_param" \
+        --speed "$speed_param" \
+        --protocol "$proto_param"
 
-    # Обновляем конфиг Mieru (добавляем пользователя)
-    if [[ -f "$STATE_DIR/mieru.env" ]]; then
-        source "$STATE_DIR/mieru.env"
-        local users_json=""
-        while IFS='|' read -r uname upass _rest; do
-            [[ -n "$uname" ]] && users_json+="{\"name\":\"${uname}\",\"password\":\"${upass}\"},"
-        done < "$users_file"
-        users_json="[${users_json%,}]"
-
-        cat > /tmp/mita_users_config.json <<EOF
-{
-    "portBindings": [
-        {"port": ${MIERU_PORT}, "protocol": "TCP"},
-        {"port": ${MIERU_UDP_PORT}, "protocol": "UDP"}
-    ],
-    "users": ${users_json},
-    "loggingLevel": "WARN",
-    "mtu": 1400
-}
-EOF
-        mita apply config /tmp/mita_users_config.json 2>/dev/null || true
-        rm -f /tmp/mita_users_config.json
-        systemctl restart mita 2>/dev/null || true
+    local user_sub_path
+    user_sub_path=$(sqlite3 /etc/vpn-panel/panel.db "SELECT sub_path FROM users WHERE username='$username';" 2>/dev/null || echo "")
+    if [[ -n "$user_sub_path" ]]; then
+        printf "  → http://%s:8080/%s\n\n" "$(get_server_ip)" "$user_sub_path"
     fi
-
-    # Генерируем ссылки для пользователя
-    local sub_content=""
-    if [[ "$proto_limit" == "all" || "$proto_limit" == "hysteria2" ]]; then
-        [[ -n "${H2_URI:-}" ]] && sub_content+="${H2_URI}"$'\n'
-    fi
-    if [[ "$proto_limit" == "all" || "$proto_limit" == "mieru" ]]; then
-        [[ -n "${MIERU_URI:-}" ]] && sub_content+="${MIERU_URI}"$'\n'
-    fi
-    local sub_base64
-    sub_base64=$(echo -n "$sub_content" | base64 | tr -d '\r\n')
-    local user_sub_path="sub-${username}-$(openssl rand -hex 4).txt"
-    echo -n "$sub_base64" > "/var/www/html/${user_sub_path}"
-    chmod 644 "/var/www/html/${user_sub_path}"
-
-    printf "\n  ${GREEN}✔${NC}  Пользователь '${BOLD}%s${NC}' создан.\n\n" "$username"
-    printf "  ${BOLD}Пароль:${NC}        %s\n" "$password"
-    printf "  ${BOLD}Срок:${NC}          %s\n" "$expire_display"
-    printf "  ${BOLD}Трафик:${NC}        %s\n" "$traffic_display"
-    printf "  ${BOLD}Скорость:${NC}      %s\n" "$speed_display"
-    printf "  ${BOLD}Протокол:${NC}      %s\n" "$proto_display"
-    printf "\n"
-    printf "  ${BOLD}Ссылка для клиента:${NC}\n"
-    printf "  → http://%s:8080/%s\n\n" "$(get_server_ip)" "$user_sub_path"
 }
 
 # =============================================================================
@@ -1928,7 +1788,7 @@ EOF
 # 9. setup_panel
 # =============================================================================
 setup_panel() {
-    step_begin "VPN Panel (веб-интерфейс)"
+    step_begin "VPN Panel (Go веб-интерфейс)"
 
     if is_done "setup_panel"; then
         step_skip; return 0
@@ -1936,62 +1796,54 @@ setup_panel() {
 
     PANEL_PORT=$(find_free_port tcp 20000 65000)
 
-    # Установка зависимостей
-    if ! python3 -c "import flask" 2>/dev/null; then
-        # Убедимся что pip3 установлен
-        if ! command -v pip3 &>/dev/null; then
-            if [[ "$PKG_MANAGER" == "apt" ]]; then
-                apt-get install -y -qq python3-pip 2>&1 | tail -2
-            elif [[ "$PKG_MANAGER" == "dnf" ]]; then
-                dnf install -y -q python3-pip 2>&1 | tail -2
-            fi
-        fi
-        pip3 install --break-system-packages flask flask-wtf 2>&1 | tail -3 || \
-        pip3 install flask flask-wtf 2>&1 | tail -3 || true
-    fi
-
-    # Копирование файлов панели
+    # Директории панели
     local panel_dir="/opt/vpn-panel"
-    mkdir -p "$panel_dir"/{templates,static,certs}
+    mkdir -p "$panel_dir"
     mkdir -p /etc/vpn-panel
 
-    # Скачиваем файлы панели из репозитория
-    local repo_raw="https://raw.githubusercontent.com/Maksre1/vpn-setup/main/panel"
-    for f in app.py models.py utils.py; do
-        curl -fsSL "${repo_raw}/${f}" -o "${panel_dir}/${f}" >> "$LOG_FILE" 2>&1 || true
-    done
-    for f in base.html login.html dashboard.html users.html user_edit.html keys.html settings.html logs.html; do
-        curl -fsSL "${repo_raw}/templates/${f}" -o "${panel_dir}/templates/${f}" >> "$LOG_FILE" 2>&1 || true
-    done
-    for f in style.css app.js; do
-        curl -fsSL "${repo_raw}/static/${f}" -o "${panel_dir}/static/${f}" >> "$LOG_FILE" 2>&1 || true
-    done
+    # Остановка старой службы на Python
+    systemctl stop vpn-panel 2>/dev/null || true
 
-    # Генерация ECDSA-сертификата
-    if [[ ! -f "$panel_dir/certs/server.key" ]]; then
-        openssl ecparam -genkey -name prime256v1 \
-            -out "$panel_dir/certs/server.key" 2>/dev/null
-        openssl req -new -x509 \
-            -key "$panel_dir/certs/server.key" \
-            -out "$panel_dir/certs/server.crt" \
-            -days 3650 -nodes \
-            -subj "/CN=vpn-panel/O=VPN/C=US" 2>/dev/null
-        chmod 600 "$panel_dir/certs/server.key"
-        chmod 644 "$panel_dir/certs/server.crt"
+    # Удаление старых Python файлов и папок (templates, static) для чистоты
+    rm -rf "$panel_dir"/{templates,static,app.py,models.py,utils.py,manage_users.py,subscription_server.py,traffic_daemon.py}
+
+    # Копирование скомпилированного Go бинарного файла
+    local local_binary="${SCRIPT_DIR}/panel_go/vpn-panel"
+    if [[ -f "$local_binary" ]]; then
+        cp "$local_binary" "${panel_dir}/vpn-panel"
+    else
+        # Fallback: скачивание с GitHub если бинарника нет локально
+        curl -fsSL "https://raw.githubusercontent.com/Maksre1/vpn-setup/main/panel_go/vpn-panel" -o "${panel_dir}/vpn-panel" >> "$LOG_FILE" 2>&1 || true
+    fi
+    chmod +x "${panel_dir}/vpn-panel"
+
+    # Генерируем или считываем секретный ключ PANEL_SECRET для стабильности сессий
+    local panel_secret
+    if [[ -f "$STATE_DIR/panel.env" ]] && grep -q "PANEL_SECRET" "$STATE_DIR/panel.env"; then
+        panel_secret=$(grep "PANEL_SECRET" "$STATE_DIR/panel.env" | cut -d'=' -f2 | tr -d '"'"'")
+    else
+        panel_secret=$(openssl rand -hex 32)
     fi
 
-    # Systemd unit
+    # Сохраняем настройки окружения панели
+    cat > "$STATE_DIR/panel.env" <<EOF
+PANEL_PORT=${PANEL_PORT}
+PANEL_SECRET=${panel_secret}
+EOF
+    chmod 600 "$STATE_DIR/panel.env"
+
+    # Systemd unit для Go-панели (без Python и gunicorn)
     cat > /etc/systemd/system/vpn-panel.service <<EOF
 [Unit]
-Description=VPN Management Panel
+Description=VPN Management Panel (Go Edition)
 After=network.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=${panel_dir}
-Environment=PANEL_PORT=${PANEL_PORT}
-ExecStart=/usr/bin/python3 ${panel_dir}/app.py
+EnvironmentFile=${STATE_DIR}/panel.env
+ExecStart=${panel_dir}/vpn-panel
 Restart=always
 RestartSec=5s
 
@@ -2016,16 +1868,15 @@ EOF
     ufw allow "${PANEL_PORT}/tcp" comment "VPN Panel" 2>/dev/null || true
     ufw reload 2>/dev/null || true
 
-    # Сохраняем порт
-    echo "PANEL_PORT=\"${PANEL_PORT}\"" > "$STATE_DIR/panel.env"
-    chmod 600 "$STATE_DIR/panel.env"
-
     sleep 2
 
-    # Автоочистка истёкших пользователей (cron, каждый день в 3:00)
+    # Автоочистка истёкших пользователей (cron, запускает vpn-cleanup.sh)
     local cleanup_script="/usr/local/bin/vpn-cleanup.sh"
-    cp "${BASH_SOURCE[0]%/*}/cleanup-expired.sh" "$cleanup_script" 2>/dev/null || \
-    curl -fsSL "https://raw.githubusercontent.com/Maksre1/vpn-setup/main/cleanup-expired.sh" -o "$cleanup_script" 2>/dev/null || true
+    # Создаем простой скрипт очистки через вызов Go-бинарника vpn-panel cleanup
+    cat > "$cleanup_script" <<EOF
+#!/bin/bash
+/opt/vpn-panel/vpn-panel cleanup >> /var/log/vpn-cleanup.log 2>&1
+EOF
     chmod +x "$cleanup_script" 2>/dev/null || true
     (crontab -l 2>/dev/null | grep -v "vpn-cleanup"; echo "0 3 * * * $cleanup_script") | crontab - 2>/dev/null || true
 

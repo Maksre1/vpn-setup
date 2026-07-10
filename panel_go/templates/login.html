@@ -1,14 +1,23 @@
-{% extends "base.html" %}
-{% block title %}Вход{% endblock %}
-{% block fullpage %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Вход — VPN Panel</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="/static/style.css" rel="stylesheet">
+</head>
+<body>
 <div class="login-page">
     <div class="login-box">
         <div class="login-brand">
             <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 2.18l7 3.12v4.7c0 4.67-3.13 9.06-7 10.2-3.87-1.14-7-5.53-7-10.2V6.3l7-3.12z"/></svg>
             VPN Panel
         </div>
+        {{ if .Error }}
+        <div class="flash flash-danger">{{ .Error }}</div>
+        {{ end }}
         <form method="POST">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label class="form-label">Логин</label>
                 <input type="text" name="username" class="form-control" required autofocus>
@@ -21,4 +30,5 @@
         </form>
     </div>
 </div>
-{% endblock %}
+</body>
+</html>

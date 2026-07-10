@@ -3,6 +3,7 @@ import os
 import secrets
 import functools
 import time
+import re
 from datetime import datetime, date
 from collections import defaultdict
 
@@ -11,13 +12,14 @@ from flask import (
     flash, session, jsonify, abort, Response
 )
 from werkzeug.security import generate_password_hash, check_password_hash
+from flask_wtf.csrf import CSRFProtect
 
 from models import (
     init_db, get_db, get_mieru_config, get_hysteria2_config,
     get_subscription_paths, get_server_ip, get_server_specs,
     get_all_service_statuses, restart_service, get_logs,
     sync_user_to_conf, remove_user_from_conf, update_mieru_users,
-    record_traffic_snapshot, get_traffic_history
+    update_hysteria_users, record_traffic_snapshot, get_traffic_history
 )
 from utils import (
     gen_password, gen_random_path, get_hysteria2_uri, get_mieru_uri,
@@ -30,6 +32,17 @@ app.secret_key = os.environ.get("PANEL_SECRET", secrets.token_hex(32))
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+csrf = CSRFProtect(app)
+
+app.jinja_env.filters["format_traffic"] = format_traffic
+app.jinja_env.filters["format_speed"] = format_speed
+app.jinja_env.filters["format_expire"] = format_expire
+
+@app.context_processor
+def inject_pjax():
+    from flask import request
+    return {"pjax": request.headers.get("X-PJAX") == "true"}
 
 PANEL_PORT = os.environ.get("PANEL_PORT", "8443")
 
@@ -178,10 +191,14 @@ def users_list():
         u["_traffic_fmt"] = format_traffic(u["traffic_limit_gb"])
         u["_speed_fmt"] = format_speed(u["speed_limit_mbps"])
         uris = []
-        if u["protocol"] in ("all", "hysteria2"):
-            uris.append(get_hysteria2_uri(h2, server_ip))
-        if u["protocol"] in ("all", "mieru"):
-            uris.append(get_mieru_uri(mieru, server_ip))
+        h2_uri = get_hysteria2_uri(h2, server_ip, u["username"], u["password"]) if u["protocol"] in ("all", "hysteria2") else ""
+        mieru_uri = get_mieru_uri(mieru, server_ip, u["username"], u["password"]) if u["protocol"] in ("all", "mieru") else ""
+        if h2_uri:
+            uris.append(h2_uri)
+        if mieru_uri:
+            uris.append(mieru_uri)
+        u["h2_uri"] = h2_uri
+        u["mieru_uri"] = mieru_uri
         u["_sub_b64"] = gen_subscription_base64(uris)
         users.append(u)
 
@@ -193,16 +210,29 @@ def users_list():
 def user_add():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
-        if not username:
-            flash("Имя не может быть пустым", "danger")
+        # Валидация имени пользователя
+        if not re.match(r"^[a-zA-Z0-9_-]{3,32}$", username):
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return jsonify({"ok": False, "msg": "Имя пользователя должно содержать только латинские буквы, цифры, дефис и подчеркивание (3-32 символов)."}), 400
+            flash("Имя пользователя должно содержать только латинские буквы, цифры, дефис и подчеркивание (3-32 символов).", "danger")
             return redirect(url_for("user_add"))
 
         password = gen_password()
         expire = request.form.get("expire_date", "never")
         if expire == "custom":
             expire = request.form.get("expire_custom", "never")
-        traffic = int(request.form.get("traffic_limit", 0))
-        speed = int(request.form.get("speed_limit", 0))
+        
+        try:
+            traffic = int(request.form.get("traffic_limit", 0))
+            speed = int(request.form.get("speed_limit", 0))
+            if traffic < 0 or speed < 0:
+                raise ValueError("Лимиты не могут быть отрицательными")
+        except ValueError:
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return jsonify({"ok": False, "msg": "Неверные значения лимитов трафика или скорости."}), 400
+            flash("Неверные значения лимитов трафика или скорости.", "danger")
+            return redirect(url_for("user_add"))
+            
         protocol = request.form.get("protocol", "all")
 
         # Срок
@@ -234,8 +264,13 @@ def user_add():
             user = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
             sync_user_to_conf(user)
             update_mieru_users()
+            update_hysteria_users()
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return jsonify({"ok": True, "msg": f"Пользователь '{username}' успешно создан. Пароль: {password}"})
             flash(f"Пользователь '{username}' создан. Пароль: {password}", "success")
         except Exception as e:
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return jsonify({"ok": False, "msg": f"Ошибка: {e}"}), 500
             flash(f"Ошибка: {e}", "danger")
         finally:
             conn.close()
@@ -269,23 +304,45 @@ def user_edit(user_id):
         else:
             expire = "never"
 
-        traffic = int(request.form.get("traffic_limit", user["traffic_limit_gb"]))
-        speed = int(request.form.get("speed_limit", user["speed_limit_mbps"]))
+        try:
+            traffic = int(request.form.get("traffic_limit", user["traffic_limit_gb"]))
+            speed = int(request.form.get("speed_limit", user["speed_limit_mbps"]))
+            if traffic < 0 or speed < 0:
+                raise ValueError()
+        except ValueError:
+            conn.close()
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return jsonify({"ok": False, "msg": "Неверные значения лимитов трафика или скорости."}), 400
+            flash("Неверные значения лимитов трафика или скорости.", "danger")
+            return redirect(url_for("user_edit", user_id=user_id))
+            
         protocol = request.form.get("protocol", user["protocol"])
         is_active = 1 if request.form.get("is_active") else 0
+        reset_traffic = 1 if request.form.get("reset_traffic") else 0
 
-        conn.execute(
-            """UPDATE users SET expire_date=?, traffic_limit_gb=?,
-               speed_limit_mbps=?, protocol=?, is_active=?
-               WHERE id=?""",
-            (expire, traffic, speed, protocol, is_active, user_id)
-        )
+        if reset_traffic:
+            conn.execute(
+                """UPDATE users SET expire_date=?, traffic_limit_gb=?,
+                   speed_limit_mbps=?, protocol=?, is_active=?, used_traffic_bytes=0
+                   WHERE id=?""",
+                (expire, traffic, speed, protocol, is_active, user_id)
+            )
+        else:
+            conn.execute(
+                """UPDATE users SET expire_date=?, traffic_limit_gb=?,
+                   speed_limit_mbps=?, protocol=?, is_active=?
+                   WHERE id=?""",
+                (expire, traffic, speed, protocol, is_active, user_id)
+            )
         conn.commit()
         updated = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         sync_user_to_conf(updated)
         update_mieru_users()
+        update_hysteria_users()
         conn.close()
 
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return jsonify({"ok": True, "msg": f"Пользователь '{user['username']}' успешно обновлён"})
         flash(f"Пользователь '{user['username']}' обновлён", "success")
         return redirect(url_for("users_list"))
 
@@ -298,13 +355,23 @@ def user_edit(user_id):
 def user_delete(user_id):
     conn = get_db()
     user = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    ok = False
     if user:
         conn.execute("DELETE FROM users WHERE id=?", (user_id,))
         conn.commit()
         remove_user_from_conf(user["username"])
         update_mieru_users()
-        flash(f"Пользователь '{user['username']}' удалён", "success")
+        update_hysteria_users()
+        ok = True
+        
     conn.close()
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        if ok:
+            return jsonify({"ok": True, "msg": f"Пользователь '{user['username']}' успешно удалён"})
+        return jsonify({"ok": False, "msg": "Пользователь не найден"}), 404
+        
+    if ok:
+        flash(f"Пользователь '{user['username']}' удалён", "success")
     return redirect(url_for("users_list"))
 
 
@@ -313,6 +380,7 @@ def user_delete(user_id):
 def user_reset_password(user_id):
     conn = get_db()
     user = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    new_pass = None
     if user:
         new_pass = gen_password()
         conn.execute("UPDATE users SET password=? WHERE id=?", (new_pass, user_id))
@@ -320,35 +388,28 @@ def user_reset_password(user_id):
         updated = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         sync_user_to_conf(updated)
         update_mieru_users()
-        flash(f"Пароль '{user['username']}' сброшен: {new_pass}", "success")
+        update_hysteria_users()
+        
     conn.close()
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        if new_pass:
+            return jsonify({"ok": True, "msg": f"Пароль пользователя '{user['username']}' успешно сброшен: {new_pass}"})
+        return jsonify({"ok": False, "msg": "Пользователь не найден"}), 404
+        
+    if new_pass:
+        flash(f"Пароль '{user['username']}' сброшен: {new_pass}", "success")
     return redirect(url_for("users_list"))
 
 
-# ── Keys ─────────────────────────────────────────────────────────────────────
-@app.route("/keys")
+# ── QR API ───────────────────────────────────────────────────────────────────
+@app.route("/api/qr")
 @login_required
-def keys():
-    server_ip = get_server_ip()
-    mieru = get_mieru_config()
-    h2 = get_hysteria2_config()
-    sub = get_subscription_paths()
-
-    mieru_uri = get_mieru_uri(mieru, server_ip)
-    h2_uri = get_hysteria2_uri(h2, server_ip)
-
-    sub_content = "\n".join(u for u in [h2_uri, mieru_uri] if u)
-    sub_b64 = gen_subscription_base64([h2_uri, mieru_uri])
-
-    sub_path = sub.get("SUB_PATH", "sub.txt")
-    clash_path = sub.get("CLASH_PATH", "clash.yaml")
-
-    return render_template("keys.html",
-                           server_ip=server_ip,
-                           mieru=mieru, h2=h2,
-                           mieru_uri=mieru_uri, h2_uri=h2_uri,
-                           sub_b64=sub_b64,
-                           sub_path=sub_path, clash_path=clash_path)
+def api_qr():
+    text = request.args.get("text", "")
+    if not text:
+        abort(400)
+    svg_data = gen_qr_svg(text)
+    return Response(svg_data, mimetype="image/svg+xml")
 
 
 # ── Settings ─────────────────────────────────────────────────────────────────
@@ -413,6 +474,13 @@ if __name__ == "__main__":
 
     # Создаём админа при старте
     _ensure_admin()
+
+    # Запускаем фоновый сбор трафика
+    try:
+        from traffic_daemon import start_traffic_daemon
+        start_traffic_daemon()
+    except Exception as e:
+        print(f"Ошибка запуска демона трафика: {e}")
 
     port = int(PANEL_PORT)
     print(f"VPN Panel starting on port {port}...")

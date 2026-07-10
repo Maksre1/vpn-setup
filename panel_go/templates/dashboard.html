@@ -1,0 +1,312 @@
+{{ define "title" }}Обзор{{ end }}
+{{ define "topbar" }}Обзор{{ end }}
+{{ define "content" }}
+
+<!-- Upper resource widgets row -->
+<div class="grid-3" style="margin-bottom: 16px;">
+    <!-- CPU Widget -->
+    <div class="panel" style="padding: 16px; display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 500; font-size: 13px; color: var(--text-secondary);"><i class="bi bi-cpu" style="margin-right: 4px;"></i> Загрузка CPU</span>
+            <span class="mono" id="cpuVal" style="font-weight: 600; font-size: 13px;">Загрузка...</span>
+        </div>
+        <div class="progress-bar-wrap" style="width: 100%; height: 5px; background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: 2.5px; overflow: hidden;">
+            <div id="cpuBar" class="progress-bar" style="width: 0%; height: 100%; background: var(--accent); border-radius: 2.5px; transition: width 0.5s ease;"></div>
+        </div>
+    </div>
+
+    <!-- RAM Widget -->
+    <div class="panel" style="padding: 16px; display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 500; font-size: 13px; color: var(--text-secondary);"><i class="bi bi-memory" style="margin-right: 4px;"></i> RAM (Память)</span>
+            <span class="mono" id="ramVal" style="font-weight: 600; font-size: 13px;">Загрузка...</span>
+        </div>
+        <div class="progress-bar-wrap" style="width: 100%; height: 5px; background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: 2.5px; overflow: hidden;">
+            <div id="ramBar" class="progress-bar" style="width: 0%; height: 100%; background: var(--green); border-radius: 2.5px; transition: width 0.5s ease;"></div>
+        </div>
+    </div>
+
+    <!-- Disk Widget -->
+    <div class="panel" style="padding: 16px; display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 500; font-size: 13px; color: var(--text-secondary);"><i class="bi bi-hdd" style="margin-right: 4px;"></i> HDD / SSD (Диск)</span>
+            <span class="mono" id="diskVal" style="font-weight: 600; font-size: 13px;">Загрузка...</span>
+        </div>
+        <div class="progress-bar-wrap" style="width: 100%; height: 5px; background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: 2.5px; overflow: hidden;">
+            <div id="diskBar" class="progress-bar" style="width: 0%; height: 100%; background: var(--yellow); border-radius: 2.5px; transition: width 0.5s ease;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Middle row: Traffic Chart + Server Spec details -->
+<div class="grid-2" style="grid-template-columns: 2fr 1fr; margin-bottom: 16px;">
+    <!-- Network Traffic Chart -->
+    <div class="panel" style="display: flex; flex-direction: column;">
+        <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Сетевой трафик (последние 24ч)</span>
+            <div style="display:flex; gap:16px; font-size:12px; font-weight:500;">
+                <span style="color:var(--green);"><i class="bi bi-arrow-down-short"></i> <span id="liveSpeedRx">0.00 КБ/с</span></span>
+                <span style="color:var(--accent);"><i class="bi bi-arrow-up-short"></i> <span id="liveSpeedTx">0.00 КБ/с</span></span>
+            </div>
+        </div>
+        <div class="panel-body" style="flex-grow: 1; position: relative; min-height: 220px; padding: 12px 16px 8px 8px;">
+            <canvas id="trafficChart"></canvas>
+        </div>
+    </div>
+
+    <!-- Server Specs Panel -->
+    <div class="panel" style="display: flex; flex-direction: column; justify-content: space-between;">
+        <div class="panel-header">Сведения о сервере</div>
+        <div class="panel-body" style="display: flex; flex-direction: column; gap: 10px; flex-grow: 1; justify-content: center; padding: 16px;">
+            <div class="metric-row"><span class="metric-label">IP адрес</span><span class="metric-value mono" style="font-weight:600;">{{ .ServerIP }}</span></div>
+            <div class="metric-row"><span class="metric-label">Uptime</span><span class="metric-value" id="serverUptime">{{ .Specs.Uptime }}</span></div>
+            <div class="metric-row"><span class="metric-label">Количество ядер</span><span class="metric-value">{{ .Specs.CPUCores }} Cores</span></div>
+            <div class="metric-row"><span class="metric-label">Load Avg</span><span class="metric-value mono" id="serverLoad">{{ .LoadAvgFmt }}</span></div>
+            <div class="metric-row"><span class="metric-label">Версия ядра</span><span class="metric-value mono" style="font-size:11px;">{{ .Specs.Kernel }}</span></div>
+            
+            <div class="metric-row" style="border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px;">
+                <span class="metric-label">Пользователи</span>
+                <span class="metric-value" style="font-weight:600;">
+                    {{ .Total }} ({{ .Active }} акт. / <span style="{{ if gt .Expired 0 }}color:var(--red);{{ end }}">{{ .Expired }} ист.</span>)
+                </span>
+            </div>
+            
+            <div class="metric-row" style="border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px;">
+                <span class="metric-label">Службы VPN</span>
+                <span class="metric-value" style="display:flex; gap:8px;" id="liveServicesSummary">
+                    {{ range $name, $up := .Statuses }}
+                    {{ $shortName := $name }}
+                    {{ if eq $name "Mieru (mita)" }}{{ $shortName = "Mieru" }}
+                    {{ else if eq $name "Cloudflare WARP" }}{{ $shortName = "WARP" }}{{ end }}
+                    <span class="status-dot {{ if $up }}active{{ else }}expired{{ end }}" title="{{ $name }}" style="font-size:11.5px; font-weight:600;">
+                        {{ $shortName }}
+                    </span>
+                    {{ end }}
+                </span>
+            </div>
+        </div>
+    </div>
+</div>
+
+{{ end }}
+
+{{ define "scripts" }}
+<script>
+function updateServicesUI(statuses) {
+    const container = document.getElementById('liveServicesSummary');
+    if (!container) return;
+    
+    let html = '';
+    for (const [name, up] of Object.entries(statuses)) {
+        let shortName = name;
+        if (name === "Mieru (mita)") shortName = "Mieru";
+        else if (name === "Cloudflare WARP") shortName = "WARP";
+        
+        const dotClass = up ? 'active' : 'expired';
+        html += `<span class="status-dot ${dotClass}" title="${name}" style="font-size:11.5px; font-weight:600; display:inline-flex; align-items:center; gap:5px;">${shortName}</span> `;
+    }
+    container.innerHTML = html;
+}
+
+// Chart.js initialization
+(function() {
+    const labels = [{{ range .TrafficHistory }}'{{ .Label }}',{{ end }}];
+    const rxData = [{{ range .TrafficHistory }}{{ .Rx }},{{ end }}];
+    const txData = [{{ range .TrafficHistory }}{{ .Tx }},{{ end }}];
+    
+    const ctx = document.getElementById('trafficChart').getContext('2d');
+    const style = getComputedStyle(document.body);
+    const accentColor = style.getPropertyValue('--accent').trim() || '#007aff';
+    const greenColor = style.getPropertyValue('--green').trim() || '#34c759';
+    const borderColor = style.getPropertyValue('--border').trim() || 'rgba(255,255,255,0.08)';
+    const textMuted = style.getPropertyValue('--text-muted').trim() || '#636366';
+
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Вход (RX), МБ',
+                    data: rxData,
+                    borderColor: greenColor,
+                    backgroundColor: 'rgba(52,199,89,0.02)',
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    fill: true,
+                    tension: 0.25
+                },
+                {
+                    label: 'Исход (TX), МБ',
+                    data: txData,
+                    borderColor: accentColor,
+                    backgroundColor: 'rgba(0,122,255,0.02)',
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    fill: true,
+                    tension: 0.25
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                    align: 'end',
+                    labels: {
+                        boxWidth: 8,
+                        boxHeight: 8,
+                        font: { size: 11, family: 'var(--sans)' },
+                        color: textMuted
+                    }
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false,
+                    titleFont: { family: 'var(--mono)', size: 11 },
+                    bodyFont: { family: 'var(--sans)', size: 11 }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { color: borderColor, drawTicks: false },
+                    ticks: {
+                        color: textMuted,
+                        font: { size: 9, family: 'var(--mono)' },
+                        maxTicksLimit: 8
+                    }
+                },
+                y: {
+                    grid: { color: borderColor, drawTicks: false },
+                    ticks: {
+                        color: textMuted,
+                        font: { size: 9, family: 'var(--mono)' }
+                    }
+                }
+            }
+        }
+    });
+})();
+
+// Real-time metrics and speed calculator
+(function() {
+    let lastRx = 0;
+    let lastTx = 0;
+    let lastTime = Date.now();
+
+    function formatSpeed(bytesPerSec) {
+        if (bytesPerSec === 0) return '0.00 КБ/с';
+        const kb = bytesPerSec / 1024;
+        if (kb < 1024) {
+            return kb.toFixed(2) + ' КБ/с';
+        }
+        const mb = kb / 1024;
+        return mb.toFixed(2) + ' Мбит/с';
+    }
+
+    function updateLiveStats() {
+        fetch('/api/live-stats')
+            .then(r => r.json())
+            .then(data => {
+                // 1. Update text metadata
+                const uptimeEl = document.getElementById('serverUptime');
+                const loadEl = document.getElementById('serverLoad');
+                if (uptimeEl) uptimeEl.textContent = data.uptime;
+                if (loadEl) loadEl.textContent = data.load_avg.join(' / ');
+                
+                updateServicesUI(data.statuses);
+
+                // 2. Update widget progress bars
+                const cpuBar = document.getElementById('cpuBar');
+                const cpuVal = document.getElementById('cpuVal');
+                if (cpuBar && cpuVal) {
+                    cpuBar.style.width = data.cpu_pct + '%';
+                    cpuVal.textContent = data.cpu_pct + '%';
+                }
+
+                const ramBar = document.getElementById('ramBar');
+                const ramVal = document.getElementById('ramVal');
+                if (ramBar && ramVal) {
+                    ramBar.style.width = data.ram.pct + '%';
+                    ramVal.textContent = data.ram.used + ' / ' + data.ram.total + ' МБ (' + data.ram.pct + '%)';
+                }
+
+                const diskBar = document.getElementById('diskBar');
+                const diskVal = document.getElementById('diskVal');
+                if (diskBar && diskVal) {
+                    diskBar.style.width = data.disk.pct + '%';
+                    const diskUsedGB = (data.disk.used / (1024*1024*1024)).toFixed(1);
+                    const diskTotalGB = (data.disk.total / (1024*1024*1024)).toFixed(1);
+                    diskVal.textContent = diskUsedGB + ' / ' + diskTotalGB + ' ГБ (' + data.disk.pct + '%)';
+                }
+
+                // 3. Speed calculation
+                const now = Date.now();
+                const elapsedSec = (now - lastTime) / 1000;
+                
+                const speedRxEl = document.getElementById('liveSpeedRx');
+                const speedTxEl = document.getElementById('liveSpeedTx');
+
+                if (lastRx > 0 && lastTx > 0 && elapsedSec > 0 && speedRxEl && speedTxEl) {
+                    const rxSpeed = (data.rx_bytes - lastRx) / elapsedSec;
+                    const txSpeed = (data.tx_bytes - lastTx) / elapsedSec;
+
+                    speedRxEl.textContent = formatSpeed(rxSpeed >= 0 ? rxSpeed : 0);
+                    speedTxEl.textContent = formatSpeed(txSpeed >= 0 ? txSpeed : 0);
+                }
+
+                lastRx = data.rx_bytes;
+                lastTx = data.tx_bytes;
+                lastTime = now;
+            })
+            .catch(err => console.error('Error fetching live stats:', err));
+    }
+
+    // Set initial values
+    fetch('/api/live-stats')
+        .then(r => r.json())
+        .then(data => {
+            lastRx = data.rx_bytes;
+            lastTx = data.tx_bytes;
+            lastTime = Date.now();
+            
+            const cpuBar = document.getElementById('cpuBar');
+            const cpuVal = document.getElementById('cpuVal');
+            if (cpuBar && cpuVal) {
+                cpuBar.style.width = data.cpu_pct + '%';
+                cpuVal.textContent = data.cpu_pct + '%';
+            }
+            
+            const ramBar = document.getElementById('ramBar');
+            const ramVal = document.getElementById('ramVal');
+            if (ramBar && ramVal) {
+                ramBar.style.width = data.ram.pct + '%';
+                ramVal.textContent = data.ram.used + ' / ' + data.ram.total + ' МБ (' + data.ram.pct + '%)';
+            }
+            
+            const diskBar = document.getElementById('diskBar');
+            const diskVal = document.getElementById('diskVal');
+            if (diskBar && diskVal) {
+                diskBar.style.width = data.disk.pct + '%';
+                const diskUsedGB = (data.disk.used / (1024*1024*1024)).toFixed(1);
+                const diskTotalGB = (data.disk.total / (1024*1024*1024)).toFixed(1);
+                diskVal.textContent = diskUsedGB + ' / ' + diskTotalGB + ' ГБ (' + data.disk.pct + '%)';
+            }
+        });
+
+    // Start interval
+    const statsInterval = setInterval(updateLiveStats, 3000);
+
+    // Clean up interval on PJAX navigation to prevent memory leak
+    document.addEventListener('pjax:beforeReplace', function cleanup() {
+        clearInterval(statsInterval);
+        document.removeEventListener('pjax:beforeReplace', cleanup);
+    }, { once: true });
+})();
+</script>
+{{ end }}

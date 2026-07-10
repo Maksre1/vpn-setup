@@ -1,0 +1,9 @@
+<span id="pjax-title" style="display:none;">{{ block "title" . }}{{ end }}</span>
+<span id="pjax-topbar" style="display:none;">{{ block "topbar" . }}{{ end }}</span>
+<div class="content">
+    {{ if .FlashMessage }}
+    <div class="flash flash-{{ .FlashCategory }}">{{ .FlashMessage }}</div>
+    {{ end }}
+    {{ block "content" . }}{{ end }}
+</div>
+{{ block "scripts" . }}{{ end }}

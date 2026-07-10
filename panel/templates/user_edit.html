@@ -7,6 +7,7 @@
         <div class="panel-header">{{ user.username if user else 'Новый пользователь' }}</div>
         <div class="panel-body">
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 {% if mode == 'add' %}
                 <div class="form-group">
                     <label class="form-label">Имя</label>
@@ -48,10 +49,14 @@
                 </div>
 
                 {% if mode == 'edit' %}
-                <div class="form-group">
+                <div class="form-group" style="display:flex; flex-direction:column; gap:8px;">
                     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
                         <input type="checkbox" name="is_active" {{ 'checked' if user.is_active }} style="accent-color:var(--accent);">
                         <span class="form-label" style="margin:0;">Активен</span>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                        <input type="checkbox" name="reset_traffic" style="accent-color:var(--accent);">
+                        <span class="form-label" style="margin:0;color:var(--text-secondary);">Сбросить расход трафика (потрачено: {{ user.used_traffic_bytes | format_traffic if user.used_traffic_bytes else '0 Б' }})</span>
                     </label>
                 </div>
                 {% endif %}

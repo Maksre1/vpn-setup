@@ -15,3 +15,11 @@
 *.json
 *.yaml
 *.conf
+
+# Go Binaries
+vpn-panel
+vpn-sub
+panel_go/vpn-panel
+panel_go/vpn-sub
+/panel_go/vpn-panel
+/panel_go/vpn-sub

@@ -8,7 +8,7 @@ STATE_DIR = "/etc/vpn-setup-state"
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=20.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
@@ -16,6 +16,10 @@ def get_db():
 
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    try:
+        os.chmod(os.path.dirname(DB_PATH), 0o700)
+    except Exception:
+        pass
     conn = get_db()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS admin (
@@ -34,7 +38,8 @@ def init_db():
             protocol TEXT DEFAULT 'all',
             sub_path TEXT,
             created_at TEXT DEFAULT (datetime('now')),
-            is_active INTEGER DEFAULT 1
+            is_active INTEGER DEFAULT 1,
+            used_traffic_bytes INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS traffic_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,7 +49,18 @@ def init_db():
         );
     """)
     conn.commit()
+
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN used_traffic_bytes INTEGER DEFAULT 0")
+        conn.commit()
+    except Exception:
+        pass
+
     conn.close()
+    try:
+        os.chmod(DB_PATH, 0o600)
+    except Exception:
+        pass
 
 
 def load_env(path):
@@ -358,8 +374,36 @@ def get_logs(service, lines=50):
     return r.stdout
 
 
+def write_user_subscription(user_row):
+    """Сгенерировать и записать файл подписки пользователя в /var/www/html/."""
+    from utils import get_mieru_uri, get_hysteria2_uri, gen_subscription_base64
+    
+    server_ip = get_server_ip()
+    mieru = get_mieru_config()
+    h2 = get_hysteria2_config()
+    
+    uris = []
+    if user_row["is_active"] == 1:
+        if user_row["protocol"] in ("all", "hysteria2"):
+            uris.append(get_hysteria2_uri(h2, server_ip, user_row["username"], user_row["password"]))
+        if user_row["protocol"] in ("all", "mieru"):
+            uris.append(get_mieru_uri(mieru, server_ip, user_row["username"], user_row["password"]))
+            
+    sub_base64 = gen_subscription_base64(uris)
+    sub_path_val = user_row['sub_path']
+    if sub_path_val:
+        sub_file_path = f"/var/www/html/{sub_path_val}"
+        try:
+            os.makedirs("/var/www/html", exist_ok=True)
+            with open(sub_file_path, "w") as f:
+                f.write(sub_base64)
+            os.chmod(sub_file_path, 0o644)
+        except Exception as e:
+            print(f"Ошибка записи файла подписки: {e}")
+
+
 def sync_user_to_conf(user_row):
-    """Синхронизация пользователя из SQLite в vpn-users.conf."""
+    """Синхронизация пользователя из SQLite в vpn-users.conf с учетом статуса."""
     conf_path = f"{STATE_DIR}/vpn-users.conf"
     lines = []
     if os.path.exists(conf_path):
@@ -367,11 +411,12 @@ def sync_user_to_conf(user_row):
             lines = [l.strip() for l in f if l.strip()]
 
     username = user_row["username"]
-    new_line = f"{username}|{user_row['password']}|{user_row['expire_date']}|{user_row['traffic_limit_gb']}|{user_row['speed_limit_mbps']}|{user_row['protocol']}"
+    prefix = "" if user_row["is_active"] == 1 else "DISABLED_"
+    new_line = f"{prefix}{username}|{user_row['password']}|{user_row['expire_date']}|{user_row['traffic_limit_gb']}|{user_row['speed_limit_mbps']}|{user_row['protocol']}"
 
     updated = False
     for i, line in enumerate(lines):
-        if line.startswith(f"{username}|"):
+        if line.startswith(f"{username}|") or line.startswith(f"DISABLED_{username}|"):
             lines[i] = new_line
             updated = True
             break
@@ -382,28 +427,43 @@ def sync_user_to_conf(user_row):
     with open(conf_path, "w") as f:
         f.write("\n".join(lines) + "\n")
     os.chmod(conf_path, 0o600)
+    
+    # Также записываем подписку в /var/www/html/
+    write_user_subscription(user_row)
 
 
 def remove_user_from_conf(username):
+    # Сначала удаляем файл подписки из /var/www/html/
+    try:
+        conn = get_db()
+        user = conn.execute("SELECT sub_path FROM users WHERE username=?", (username,)).fetchone()
+        conn.close()
+        if user and user["sub_path"]:
+            sub_file_path = f"/var/www/html/{user['sub_path']}"
+            if os.path.exists(sub_file_path):
+                os.remove(sub_file_path)
+    except Exception:
+        pass
+
     conf_path = f"{STATE_DIR}/vpn-users.conf"
     if not os.path.exists(conf_path):
         return
     with open(conf_path) as f:
         lines = [l.strip() for l in f if l.strip()]
-    lines = [l for l in lines if not l.startswith(f"{username}|")]
+    lines = [l for l in lines if not (l.startswith(f"{username}|") or l.startswith(f"DISABLED_{username}|"))]
     with open(conf_path, "w") as f:
         f.write("\n".join(lines) + "\n" if lines else "")
 
 
 def update_mieru_users():
-    """Пересобрать конфиг mita со всеми пользователями из БД."""
+    """Пересобрать конфиг mita со всеми активными пользователями из БД."""
     import subprocess, json
     mieru = get_mieru_config()
     if not mieru.get("MIERU_PORT"):
         return
 
     conn = get_db()
-    users = conn.execute("SELECT username, password FROM users WHERE is_active=1").fetchall()
+    users = conn.execute("SELECT username, password FROM users WHERE is_active=1 AND (protocol='all' OR protocol='mieru')").fetchall()
     conn.close()
 
     users_json = [{"name": u["username"], "password": u["password"]} for u in users]
@@ -427,3 +487,70 @@ def update_mieru_users():
     os.remove(config_path)
     subprocess.run(["systemctl", "restart", "mita"],
                    capture_output=True, timeout=15)
+
+
+def update_hysteria_users():
+    """Пересобрать конфиг hysteria-server со всеми активными пользователями из БД."""
+    import subprocess
+    h2 = get_hysteria2_config()
+    if not h2.get("H2_PORT"):
+        return
+
+    conn = get_db()
+    users = conn.execute("SELECT username, password FROM users WHERE is_active=1 AND (protocol='all' OR protocol='hysteria2')").fetchall()
+    conn.close()
+
+    yaml_content = f"""listen: :{h2['H2_PORT']}
+tls:
+  cert: /etc/hysteria/certs/server.crt
+  key:  /etc/hysteria/certs/server.key
+auth:
+  type: userpass
+  userpass:
+"""
+    for u in users:
+        yaml_content += f"    {u['username']}: {u['password']}\n"
+
+    # Если активных пользователей нет, прописываем дефолтный рутовый пароль для совместимости
+    if not users:
+        yaml_content += f"    admin: {h2.get('H2_PASS', 'dummy_pass')}\n"
+
+    yaml_content += f"""obfs:
+  type: salamander
+  salamander:
+    password: {h2.get('H2_OBFS_PASS', '')}
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  maxIncomingStreams: 1024
+  disablePathMTUDiscovery: false
+stats:
+  bind: 127.0.0.1:25413
+  secret: hysteria_stats_secret
+"""
+    config_path = "/etc/hysteria/config.yaml"
+    try:
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        with open(config_path, "w") as f:
+            f.write(yaml_content)
+        os.chmod(config_path, 0o600)
+    except Exception as e:
+        print(f"Ошибка записи конфига Hysteria2: {e}")
+        return
+
+    subprocess.run(["systemctl", "restart", "hysteria-server"],
+                   capture_output=True, timeout=15)
+
+
+def sync_all_users_to_configs():
+    """Синхронизировать всех пользователей из базы данных в системные файлы конфигурации."""
+    conn = get_db()
+    users = conn.execute("SELECT * FROM users").fetchall()
+    conn.close()
+    for user in users:
+        sync_user_to_conf(user)
+    update_mieru_users()
+    update_hysteria_users()
