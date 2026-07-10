@@ -2,7 +2,9 @@
 import os
 import secrets
 import functools
+import time
 from datetime import datetime, date
+from collections import defaultdict
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -26,8 +28,26 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("PANEL_SECRET", secrets.token_hex(32))
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 PANEL_PORT = os.environ.get("PANEL_PORT", "8443")
+
+# ── Rate Limiter (in-memory) ────────────────────────────────────────────────
+_login_attempts = defaultdict(list)
+RATE_LIMIT = 20        # максимум попыток
+RATE_WINDOW = 900      # окно 15 минут (секунды)
+
+
+def _is_rate_limited(ip):
+    now = time.time()
+    _login_attempts[ip] = [t for t in _login_attempts[ip] if now - t < RATE_WINDOW]
+    if len(_login_attempts[ip]) >= RATE_LIMIT:
+        return True
+    return False
+
+
+def _record_login_attempt(ip):
+    _login_attempts[ip].append(time.time())
 
 
 # ── Auth decorator ───────────────────────────────────────────────────────────
@@ -52,7 +72,14 @@ def inject_globals():
 # ── Auth routes ──────────────────────────────────────────────────────────────
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    client_ip = request.remote_addr or "unknown"
+
     if request.method == "POST":
+        # Rate limiting
+        if _is_rate_limited(client_ip):
+            flash("Слишком много попыток. Подождите 15 минут.", "danger")
+            return render_template("login.html")
+
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
 
@@ -65,8 +92,10 @@ def login():
         if admin and check_password_hash(admin["password_hash"], password):
             session["admin_id"] = admin["id"]
             session["admin_username"] = admin["username"]
+            _login_attempts.pop(client_ip, None)  # Сброс при успехе
             return redirect(url_for("dashboard"))
 
+        _record_login_attempt(client_ip)
         flash("Неверный логин или пароль", "danger")
     return render_template("login.html")
 

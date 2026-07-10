@@ -2023,6 +2023,25 @@ EOF
 
     sleep 2
 
+    # Автоочистка истёкших пользователей (cron, каждый день в 3:00)
+    local cleanup_script="/usr/local/bin/vpn-cleanup.sh"
+    cp "${BASH_SOURCE[0]%/*}/cleanup-expired.sh" "$cleanup_script" 2>/dev/null || \
+    curl -fsSL "https://raw.githubusercontent.com/Maksre1/vpn-setup/main/cleanup-expired.sh" -o "$cleanup_script" 2>/dev/null || true
+    chmod +x "$cleanup_script" 2>/dev/null || true
+    (crontab -l 2>/dev/null | grep -v "vpn-cleanup"; echo "0 3 * * * $cleanup_script") | crontab - 2>/dev/null || true
+
+    # Копируем скрипты обновления/удаления
+    local repo_raw="https://raw.githubusercontent.com/Maksre1/vpn-setup/main"
+    curl -fsSL "${repo_raw}/update.sh" -o /usr/local/bin/vpn-update 2>/dev/null || true
+    curl -fsSL "${repo_raw}/uninstall.sh" -o /usr/local/bin/vpn-uninstall 2>/dev/null || true
+    chmod +x /usr/local/bin/vpn-update /usr/local/bin/vpn-uninstall 2>/dev/null || true
+
+    # Сохраняем версию
+    local remote_ver
+    remote_ver=$(curl -fsSL "${repo_raw}/VERSION" 2>/dev/null || echo "1.0.0")
+    mkdir -p "$STATE_DIR"
+    echo "$remote_ver" > "$STATE_DIR/version"
+
     mark_done "setup_panel"
     step_finish
 }
