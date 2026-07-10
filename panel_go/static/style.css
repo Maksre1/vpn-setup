@@ -393,6 +393,14 @@ body {
     transition: border-color 0.2s, box-shadow 0.2s;
     box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
 }
+select.form-control {
+    color: var(--text) !important;
+    background-color: var(--bg-input) !important;
+}
+select.form-control option {
+    background-color: var(--bg-panel) !important;
+    color: var(--text) !important;
+}
 .form-control:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.15), inset 0 1px 2px rgba(0,0,0,0.1);
