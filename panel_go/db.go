@@ -527,9 +527,20 @@ func updateMieruUsers() {
 		return
 	}
 
-	// Apply configuration using Mieru CLI
-	_ = exec.Command("mita", "apply", "config", configPath).Run()
+	// Apply configuration using Mieru CLI. Since mita is not running (chicken-and-egg problem),
+	// we start a temporary foreground run with MITA_CONFIG_JSON_FILE env var, let it write server.conf.pb,
+	// kill it, change owner, and then start the systemd service.
+	tempCmd := exec.Command("mita", "run")
+	tempCmd.Env = append(os.Environ(), "MITA_CONFIG_JSON_FILE="+configPath)
+	_ = tempCmd.Start()
+	time.Sleep(1500 * time.Millisecond)
+	if tempCmd.Process != nil {
+		_ = tempCmd.Process.Kill()
+	}
 	_ = os.Remove(configPath)
+
+	// Ensure correct ownership for systemd mita user
+	_ = exec.Command("chown", "mita:mita", "/etc/mita/server.conf.pb").Run()
 
 	// Restart Mieru (mita) systemd service
 	_ = exec.Command("systemctl", "restart", "mita").Run()
@@ -625,7 +636,7 @@ stats:
 		for _, u := range warpUsers {
 			quoted = append(quoted, fmt.Sprintf(`"%s"`, u))
 		}
-		aclBuilder.WriteString(fmt.Sprintf("warp auth(%s)\n", strings.Join(quoted, ", ")))
+		aclBuilder.WriteString(fmt.Sprintf("warp all auth(%s)\n", strings.Join(quoted, ", ")))
 	}
 	aclBuilder.WriteString("direct all\n")
 
@@ -965,7 +976,11 @@ func updateXrayConfig() {
 					},
 				}
 			} else if protocol == "shadowsocks" {
-				inb.Settings.Clients = xrClients
+				if len(xrClients) > 0 {
+					inb.Settings.Method = xrClients[0].Method
+					inb.Settings.Password = xrClients[0].Password
+					inb.Settings.Network = "tcp,udp"
+				}
 			}
 
 			if sniffEnabled, _ := settings["sniffing"].(bool); sniffEnabled {
