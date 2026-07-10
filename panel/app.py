@@ -110,25 +110,27 @@ def api_status():
 @login_required
 def users_list():
     conn = get_db()
-    users = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+    rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
     conn.close()
 
     server_ip = get_server_ip()
     mieru = get_mieru_config()
     h2 = get_hysteria2_config()
 
-    for u in users:
+    users = []
+    for row in rows:
+        u = dict(row)
         u["_expired"] = is_expired(u["expire_date"])
         u["_expire_fmt"] = format_expire(u["expire_date"])
         u["_traffic_fmt"] = format_traffic(u["traffic_limit_gb"])
         u["_speed_fmt"] = format_speed(u["speed_limit_mbps"])
-        # Генерируем ссылку
         uris = []
         if u["protocol"] in ("all", "hysteria2"):
             uris.append(get_hysteria2_uri(h2, server_ip))
         if u["protocol"] in ("all", "mieru"):
             uris.append(get_mieru_uri(mieru, server_ip))
         u["_sub_b64"] = gen_subscription_base64(uris)
+        users.append(u)
 
     return render_template("users.html", users=users, server_ip=server_ip)
 
