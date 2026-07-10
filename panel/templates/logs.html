@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Логи — VPN Panel{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-10">
+
+        <h4 class="mb-4"><i class="bi bi-journal-text"></i> Логи</h4>
+
+        <div class="card bg-dark border-secondary">
+            <div class="card-header border-secondary d-flex justify-content-between align-items-center">
+                <div>
+                    {% for svc, name in [('mieru','Mieru'), ('hysteria','Hysteria2'), ('warp','WARP'), ('fail2ban','fail2ban'), ('panel','Panel')] %}
+                    <a href="/logs?service={{ svc }}&lines={{ lines }}"
+                       class="btn btn-sm {{ 'btn-info' if selected == svc else 'btn-outline-secondary' }} me-1">
+                        {{ name }}
+                    </a>
+                    {% endfor %}
+                </div>
+                <button class="btn btn-sm btn-outline-info" onclick="refreshLogs()">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+            <div class="card-body">
+                <pre class="log-output mb-0" id="log-content">{{ log_text }}</pre>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function refreshLogs() {
+    fetch('/api/logs/{{ selected }}?lines={{ lines }}')
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('log-content').textContent = data.logs;
+        });
+}
+// Auto-scroll вниз
+const el = document.getElementById('log-content');
+if (el) el.scrollTop = el.scrollHeight;
+</script>
+{% endblock %}

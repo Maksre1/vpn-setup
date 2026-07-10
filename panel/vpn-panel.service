@@ -1,0 +1,15 @@
+[Unit]
+Description=VPN Management Panel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vpn-panel
+Environment=PANEL_PORT=__PANEL_PORT__
+ExecStart=/usr/bin/python3 /opt/vpn-panel/app.py
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

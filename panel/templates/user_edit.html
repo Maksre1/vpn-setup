@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Редактировать' if user else 'Добавить' }} пользователя — VPN Panel{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-6">
+
+        <div class="card bg-dark border-secondary">
+            <div class="card-header border-secondary">
+                <h5 class="mb-0">
+                    <i class="bi bi-{{ 'pencil' if user else 'person-plus' }}"></i>
+                    {{ 'Редактировать' if user else 'Добавить' }} пользователя
+                </h5>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    {% if mode == 'add' %}
+                    <div class="mb-3">
+                        <label class="form-label">Имя пользователя</label>
+                        <input type="text" name="username" class="form-control" required
+                               pattern="[a-zA-Z0-9_-]+" title="Латиница, цифры, _ и -">
+                    </div>
+                    {% else %}
+                    <div class="mb-3">
+                        <label class="form-label">Имя</label>
+                        <input type="text" class="form-control" value="{{ user.username }}" disabled>
+                    </div>
+                    {% endif %}
+
+                    <!-- Срок действия -->
+                    <div class="mb-3">
+                        <label class="form-label">Срок действия</label>
+                        <select name="expire_preset" class="form-select" id="expire-select" onchange="toggleCustomDate()">
+                            <option value="0" {{ 'selected' if not user or user.expire_date == 'never' }}>Бессрочно</option>
+                            <option value="7">7 дней</option>
+                            <option value="30">30 дней</option>
+                            <option value="90">90 дней</option>
+                            <option value="365">365 дней</option>
+                            <option value="custom">Своя дата</option>
+                        </select>
+                        <input type="date" name="expire_custom" class="form-control mt-2 d-none" id="expire-custom">
+                    </div>
+
+                    <!-- Трафик -->
+                    <div class="mb-3">
+                        <label class="form-label">Лимит трафика (ГБ, 0 = безлимит)</label>
+                        <input type="number" name="traffic_limit" class="form-control" min="0"
+                               value="{{ user.traffic_limit_gb if user else 0 }}">
+                    </div>
+
+                    <!-- Скорость -->
+                    <div class="mb-3">
+                        <label class="form-label">Лимит скорости (Мбит/с, 0 = безлимит)</label>
+                        <input type="number" name="speed_limit" class="form-control" min="0"
+                               value="{{ user.speed_limit_mbps if user else 0 }}">
+                    </div>
+
+                    <!-- Протокол -->
+                    <div class="mb-3">
+                        <label class="form-label">Протокол</label>
+                        <select name="protocol" class="form-select">
+                            <option value="all" {{ 'selected' if user and user.protocol == 'all' or not user }}>Все (Hysteria2 + Mieru)</option>
+                            <option value="hysteria2" {{ 'selected' if user and user.protocol == 'hysteria2' }}>Только Hysteria2</option>
+                            <option value="mieru" {{ 'selected' if user and user.protocol == 'mieru' }}>Только Mieru</option>
+                        </select>
+                    </div>
+
+                    {% if mode == 'edit' %}
+                    <!-- Активен -->
+                    <div class="mb-3 form-check form-switch">
+                        <input type="checkbox" name="is_active" class="form-check-input" id="is-active"
+                               {{ 'checked' if user.is_active }}>
+                        <label class="form-check-label" for="is-active">Активен</label>
+                    </div>
+                    {% endif %}
+
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-info">
+                            <i class="bi bi-check-lg"></i> {{ 'Сохранить' if user else 'Создать' }}
+                        </button>
+                        <a href="/users" class="btn btn-secondary">Отмена</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleCustomDate() {
+    const sel = document.getElementById('expire-select');
+    const custom = document.getElementById('expire-custom');
+    custom.classList.toggle('d-none', sel.value !== 'custom');
+}
+</script>
+{% endblock %}

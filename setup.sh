@@ -1368,7 +1368,19 @@ EOF
     printf "  → http://%s:8080/%s\n\n" "$server_ip" "$SUB_PATH"
 
     printf "  %s\n" "──────────────────────────────────────────────────────────"
-    printf "  Полные креденциалы: ${BOLD}%s${NC}\n\n" "$INFO_FILE"
+    printf "  Полные креденциалы: ${BOLD}%s${NC}\n" "$INFO_FILE"
+
+    # VPN Panel
+    if [[ -f "$STATE_DIR/panel.env" ]]; then
+        source "$STATE_DIR/panel.env"
+        local panel_pass=""
+        if [[ -f "/etc/vpn-panel/admin_password.txt" ]]; then
+            panel_pass=$(grep "admin:" /etc/vpn-panel/admin_password.txt | cut -d: -f2)
+        fi
+        printf "\n  ${BOLD}VPN Panel:${NC}\n"
+        printf "  → https://%s:%s\n" "$server_ip" "${PANEL_PORT:-?}"
+        printf "  Логин: ${BOLD}admin${NC}  Пароль: ${BOLD}%s${NC}\n\n" "${panel_pass:-?}"
+    fi
 }
 
 # =============================================================================
@@ -1388,10 +1400,14 @@ do_uninstall() {
     systemctl stop "wg-quick@wgcf-warp" 2>/dev/null || true
     systemctl disable "wg-quick@wgcf-warp" 2>/dev/null || true
 
+    systemctl stop vpn-panel 2>/dev/null || true
+    systemctl disable vpn-panel 2>/dev/null || true
+
     # Удаляем systemd-юниты
     rm -f /etc/systemd/system/hysteria-server.service
     rm -f /etc/systemd/system/vpn-sub.service
     rm -f /etc/systemd/system/warp-routing.service
+    rm -f /etc/systemd/system/vpn-panel.service
     rm -f /etc/network/if-up.d/warp-routing
 
     # Удаляем конфиги и данные
@@ -1400,6 +1416,8 @@ do_uninstall() {
     rm -rf /etc/wgcf
     rm -rf /etc/wireguard/wgcf-warp.conf
     rm -rf /etc/vpn-setup-state
+    rm -rf /etc/vpn-panel
+    rm -rf /opt/vpn-panel
     rm -rf /var/www/html
     rm -f /root/vpn-setup-info.txt
     rm -f /root/vpn-setup-sub.txt
@@ -1908,6 +1926,92 @@ EOF
 }
 
 # =============================================================================
+# 9. setup_panel
+# =============================================================================
+setup_panel() {
+    step_begin "VPN Panel (веб-интерфейс)"
+
+    if is_done "setup_panel"; then
+        step_skip; return 0
+    fi
+
+    PANEL_PORT=$(find_free_port tcp 20000 65000)
+
+    # Установка зависимостей
+    pip3 install --break-system-packages flask flask-wtf >> "$LOG_FILE" 2>&1 || \
+    pip3 install flask flask-wtf >> "$LOG_FILE" 2>&1 || true
+
+    # Копирование файлов панели
+    local panel_dir="/opt/vpn-panel"
+    mkdir -p "$panel_dir"/{templates,static,certs}
+    mkdir -p /etc/vpn-panel
+
+    # Скачиваем файлы панели из репозитория
+    local repo_raw="https://raw.githubusercontent.com/Maksre1/vpn-setup/main/panel"
+    for f in app.py models.py utils.py; do
+        curl -fsSL "${repo_raw}/${f}" -o "${panel_dir}/${f}" >> "$LOG_FILE" 2>&1 || true
+    done
+    for f in base.html login.html dashboard.html users.html user_edit.html keys.html settings.html logs.html; do
+        curl -fsSL "${repo_raw}/templates/${f}" -o "${panel_dir}/templates/${f}" >> "$LOG_FILE" 2>&1 || true
+    done
+    for f in style.css app.js; do
+        curl -fsSL "${repo_raw}/static/${f}" -o "${panel_dir}/static/${f}" >> "$LOG_FILE" 2>&1 || true
+    done
+
+    # Генерация ECDSA-сертификата
+    if [[ ! -f "$panel_dir/certs/server.key" ]]; then
+        openssl ecparam -genkey -name prime256v1 \
+            -out "$panel_dir/certs/server.key" 2>/dev/null
+        openssl req -new -x509 \
+            -key "$panel_dir/certs/server.key" \
+            -out "$panel_dir/certs/server.crt" \
+            -days 3650 -nodes \
+            -subj "/CN=vpn-panel/O=VPN/C=US" 2>/dev/null
+        chmod 600 "$panel_dir/certs/server.key"
+        chmod 644 "$panel_dir/certs/server.crt"
+    fi
+
+    # Systemd unit
+    cat > /etc/systemd/system/vpn-panel.service <<EOF
+[Unit]
+Description=VPN Management Panel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${panel_dir}
+Environment=PANEL_PORT=${PANEL_PORT}
+ExecStart=/usr/bin/python3 ${panel_dir}/app.py
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1
+    systemctl enable vpn-panel >> "$LOG_FILE" 2>&1 || true
+    systemctl restart vpn-panel >> "$LOG_FILE" 2>&1 || true
+
+    ufw allow "$PANEL_PORT"/tcp comment "VPN Panel" >> "$LOG_FILE" 2>&1
+
+    # Сохраняем порт
+    echo "PANEL_PORT=\"${PANEL_PORT}\"" > "$STATE_DIR/panel.env"
+    chmod 600 "$STATE_DIR/panel.env"
+
+    # Получаем пароль админа
+    sleep 2
+    PANEL_ADMIN_PASS=""
+    if [[ -f "/etc/vpn-panel/admin_password.txt" ]]; then
+        PANEL_ADMIN_PASS=$(grep "admin:" /etc/vpn-panel/admin_password.txt | cut -d: -f2)
+    fi
+
+    mark_done "setup_panel"
+    step_finish
+}
+
+# =============================================================================
 # MAIN — точка входа
 # =============================================================================
 main() {
@@ -1951,6 +2055,7 @@ main() {
             setup_warp
             setup_subscription_server
             setup_fail2ban
+            setup_panel
             print_summary
             exit 0
             ;;
@@ -1977,6 +2082,7 @@ main() {
                 setup_warp
                 setup_subscription_server
                 setup_fail2ban
+                setup_panel
                 print_summary
                 printf "\n  Нажмите Enter для возврата в меню..."
                 read -r
