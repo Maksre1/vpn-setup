@@ -1,111 +1,95 @@
 {% extends "base.html" %}
 {% block title %}Ключи — VPN Panel{% endblock %}
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-lg-8">
+<div style="margin-bottom:24px;">
+    <h2 style="font-size:24px; font-weight:700;"><i class="bi bi-key" style="color:var(--accent);"></i> Ключи и ссылки</h2>
+</div>
 
-        <h4 class="mb-4"><i class="bi bi-key"></i> Ключи и ссылки</h4>
-
-        <!-- Mieru -->
-        <div class="card bg-dark border-secondary mb-4">
-            <div class="card-header border-secondary">
-                <i class="bi bi-router"></i> Mieru
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
+    <!-- Mieru -->
+    <div class="glass-card">
+        <div class="glass-card-header">
+            <div class="glass-card-title"><i class="bi bi-router"></i> Mieru</div>
+        </div>
+        <div style="display:grid; gap:8px; margin-bottom:20px;">
+            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
+                <span style="color:var(--text-muted); font-size:13px;">Порт TCP</span>
+                <span style="font-weight:600; font-size:13px;">{{ mieru.MIERU_PORT|default('?') }}</span>
             </div>
-            <div class="card-body">
-                <table class="table table-dark table-sm mb-3">
-                    <tr><td class="text-muted" style="width:150px">Порт TCP</td><td>{{ mieru.MIERU_PORT|default('?') }}</td></tr>
-                    <tr><td class="text-muted">Порт UDP</td><td>{{ mieru.MIERU_UDP_PORT|default('?') }}</td></tr>
-                    <tr><td class="text-muted">Пользователь</td><td>{{ mieru.MIERU_USER|default('?') }}</td></tr>
-                    <tr><td class="text-muted">Пароль</td><td><code>{{ mieru.MIERU_PASS|default('?') }}</code></td></tr>
-                </table>
-                {% if mieru_uri %}
-                <label class="form-label text-muted small">URI:</label>
-                <div class="input-group mb-2">
-                    <input type="text" class="form-control bg-dark border-secondary text-white font-monospace small" value="{{ mieru_uri }}" readonly id="mieru-uri">
-                    <button class="btn btn-outline-info" onclick="copyLink('mieru-uri')"><i class="bi bi-clipboard"></i></button>
-                </div>
-                <div id="mieru-qr" class="text-center mt-3"></div>
-                {% endif %}
+            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
+                <span style="color:var(--text-muted); font-size:13px;">Порт UDP</span>
+                <span style="font-weight:600; font-size:13px;">{{ mieru.MIERU_UDP_PORT|default('?') }}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
+                <span style="color:var(--text-muted); font-size:13px;">Пользователь</span>
+                <span style="font-weight:600; font-size:13px;">{{ mieru.MIERU_USER|default('?') }}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; padding:8px 0;">
+                <span style="color:var(--text-muted); font-size:13px;">Пароль</span>
+                <span class="user-pass">{{ mieru.MIERU_PASS|default('?') }}</span>
             </div>
         </div>
+        {% if mieru_uri %}
+        <div class="uri-box">
+            <span class="uri-label">URI</span>
+            <span class="uri-value">{{ mieru_uri }}</span>
+            <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
+        </div>
+        {% endif %}
+    </div>
 
-        <!-- Hysteria2 -->
-        <div class="card bg-dark border-secondary mb-4">
-            <div class="card-header border-secondary">
-                <i class="bi bi-lightning"></i> Hysteria2
+    <!-- Hysteria2 -->
+    <div class="glass-card">
+        <div class="glass-card-header">
+            <div class="glass-card-title"><i class="bi bi-lightning"></i> Hysteria2</div>
+        </div>
+        <div style="display:grid; gap:8px; margin-bottom:20px;">
+            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
+                <span style="color:var(--text-muted); font-size:13px;">Порт</span>
+                <span style="font-weight:600; font-size:13px;">{{ h2.H2_PORT|default('?') }}</span>
             </div>
-            <div class="card-body">
-                <table class="table table-dark table-sm mb-3">
-                    <tr><td class="text-muted" style="width:150px">Порт</td><td>{{ h2.H2_PORT|default('?') }}</td></tr>
-                    <tr><td class="text-muted">Пароль</td><td><code>{{ h2.H2_PASS|default('?') }}</code></td></tr>
-                    <tr><td class="text-muted">OBFS пароль</td><td><code>{{ h2.H2_OBFS_PASS|default('?') }}</code></td></tr>
-                    <tr><td class="text-muted">TLS CN</td><td>{{ h2.H2_CERT_CN|default('?') }}</td></tr>
-                </table>
-                {% if h2_uri %}
-                <label class="form-label text-muted small">URI:</label>
-                <div class="input-group mb-2">
-                    <input type="text" class="form-control bg-dark border-secondary text-white font-monospace small" value="{{ h2_uri }}" readonly id="h2-uri">
-                    <button class="btn btn-outline-info" onclick="copyLink('h2-uri')"><i class="bi bi-clipboard"></i></button>
-                </div>
-                <div id="h2-qr" class="text-center mt-3"></div>
-                {% endif %}
+            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
+                <span style="color:var(--text-muted); font-size:13px;">Пароль</span>
+                <span class="user-pass">{{ h2.H2_PASS|default('?') }}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
+                <span style="color:var(--text-muted); font-size:13px;">OBFS</span>
+                <span class="user-pass">{{ h2.H2_OBFS_PASS|default('?') }}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; padding:8px 0;">
+                <span style="color:var(--text-muted); font-size:13px;">TLS CN</span>
+                <span style="font-weight:600; font-size:13px;">{{ h2.H2_CERT_CN|default('?') }}</span>
             </div>
         </div>
-
-        <!-- Ссылки для подписки -->
-        <div class="card bg-dark border-secondary mb-4">
-            <div class="card-header border-secondary">
-                <i class="bi bi-link-45deg"></i> Ссылки для подключения
-            </div>
-            <div class="card-body">
-                <div class="mb-3">
-                    <label class="form-label text-muted small">Karing / Sing-box:</label>
-                    <div class="input-group">
-                        <input type="text" class="form-control bg-dark border-secondary text-white" value="http://{{ server_ip }}:8080/singbox.json" readonly id="link-singbox">
-                        <button class="btn btn-outline-info" onclick="copyLink('link-singbox')"><i class="bi bi-clipboard"></i></button>
-                    </div>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label text-muted small">Clash Verge / Mihomo:</label>
-                    <div class="input-group">
-                        <input type="text" class="form-control bg-dark border-secondary text-white" value="http://{{ server_ip }}:8080/{{ clash_path }}" readonly id="link-clash">
-                        <button class="btn btn-outline-info" onclick="copyLink('link-clash')"><i class="bi bi-clipboard"></i></button>
-                    </div>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label text-muted small">V2Ray (единая подписка):</label>
-                    <div class="input-group">
-                        <input type="text" class="form-control bg-dark border-secondary text-white" value="http://{{ server_ip }}:8080/{{ sub_path }}" readonly id="link-sub">
-                        <button class="btn btn-outline-info" onclick="copyLink('link-sub')"><i class="bi bi-clipboard"></i></button>
-                    </div>
-                </div>
-            </div>
+        {% if h2_uri %}
+        <div class="uri-box">
+            <span class="uri-label">URI</span>
+            <span class="uri-value">{{ h2_uri }}</span>
+            <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
         </div>
-
+        {% endif %}
     </div>
 </div>
-{% endblock %}
 
-{% block scripts %}
-<script>
-// QR-коды через API
-function genQR(elementId, text) {
-    fetch('https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(text))
-        .then(r => r.blob())
-        .then(blob => {
-            const img = document.createElement('img');
-            img.src = URL.createObjectURL(blob);
-            img.className = 'img-fluid rounded';
-            img.style.maxWidth = '200px';
-            document.getElementById(elementId).appendChild(img);
-        }).catch(() => {});
-}
-
-{% if mieru_uri %}
-genQR('mieru-qr', '{{ mieru_uri }}');
-{% endif %}
-{% if h2_uri %}
-genQR('h2-qr', '{{ h2_uri }}');
-{% endif %}
-</script>
+<!-- Ссылки -->
+<div class="glass-card" style="margin-top:20px;">
+    <div class="glass-card-header">
+        <div class="glass-card-title"><i class="bi bi-link-45deg"></i> Ссылки для подключения</div>
+    </div>
+    <div class="uri-box">
+        <span class="uri-label">Sing-box</span>
+        <span class="uri-value">http://{{ server_ip }}:8080/singbox.json</span>
+        <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
+    </div>
+    <div class="uri-box">
+        <span class="uri-label">Clash</span>
+        <span class="uri-value">http://{{ server_ip }}:8080/{{ clash_path }}</span>
+        <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
+    </div>
+    <div class="uri-box">
+        <span class="uri-label">Подписка</span>
+        <span class="uri-value">http://{{ server_ip }}:8080/{{ sub_path }}</span>
+        <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
+    </div>
+</div>
 {% endblock %}
