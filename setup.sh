@@ -1210,7 +1210,7 @@ dns:
     - https://dns.google/dns-query
   fallback-filter:
     geoip: true
-    geoip-code: CN
+    geoip-code: RU
     ipcidr:
       - 240.0.0.0/4
 
