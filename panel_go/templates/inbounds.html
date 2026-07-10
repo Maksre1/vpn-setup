@@ -413,6 +413,24 @@ function handleProtocolChange(proto) {
         document.getElementById('securitySectionDefault').style.display = 'none';
     }
 
+    // Hide/Show tab buttons based on protocol
+    const hasStream = (proto === 'vless' || proto === 'trojan');
+    const hasSecurity = (proto === 'vless' || proto === 'trojan' || proto === 'hysteria2');
+    const hasSniff = (proto === 'vless' || proto === 'trojan');
+
+    document.getElementById('tabInbStreamBtn').style.display = hasStream ? 'block' : 'none';
+    document.getElementById('tabInbSecurityBtn').style.display = hasSecurity ? 'block' : 'none';
+    document.getElementById('tabInbSniffBtn').style.display = hasSniff ? 'block' : 'none';
+
+    // If currently active tab is hidden, switch to General
+    const activeTabBtn = document.querySelector('.tab-btn.active');
+    if (activeTabBtn) {
+        const activeTabId = activeTabBtn.id;
+        if (activeTabId === 'tabInbStreamBtn' && !hasStream) switchInbTab('General');
+        if (activeTabId === 'tabInbSecurityBtn' && !hasSecurity) switchInbTab('General');
+        if (activeTabId === 'tabInbSniffBtn' && !hasSniff) switchInbTab('General');
+    }
+
     // Autofill defaults
     if (proto === 'vless') {
         document.getElementById('formInbTransport').value = 'xhttp';
