@@ -37,6 +37,7 @@ readonly INFO_FILE="/root/vpn-setup-info.txt"
 
 # Рандомный путь для подписки (для безопасности — не угадать URL)
 SUB_PATH="$(openssl rand -hex 16)"
+CLASH_PATH="clash-$(openssl rand -hex 8).yaml"
 
 SSH_PORT="${SSH_PORT:-22}"
 
@@ -1069,6 +1070,7 @@ setup_subscription_server() {
     fi
     mkdir -p "$STATE_DIR"
     echo "SUB_PATH=\"${SUB_PATH}\"" > "$STATE_DIR/subscription_path"
+    echo "CLASH_PATH=\"${CLASH_PATH}\"" >> "$STATE_DIR/subscription_path"
     chmod 600 "$STATE_DIR/subscription_path"
 
     mkdir -p /var/www/html
@@ -1176,7 +1178,7 @@ JSON
     chmod 644 /var/www/html/singbox.json
 
     # clash.yaml
-    cat > /var/www/html/clash.yaml <<EOF
+    cat > "/var/www/html/${CLASH_PATH}" <<EOF
 mixed-port: 7892
 allow-lan: false
 mode: rule
@@ -1324,7 +1326,7 @@ rules:
   # Прокси для всего остального
   - MATCH,Proxy
 EOF
-    chmod 644 /var/www/html/clash.yaml
+    chmod 644 "/var/www/html/${CLASH_PATH}"
 
     # Полный файл с креденциалами (для домашнего хранения)
     cat > "$INFO_FILE" <<EOF
@@ -1360,7 +1362,7 @@ EOF
     printf "  → http://%s:8080/singbox.json\n\n" "$server_ip"
 
     printf "  ${CYAN}Clash Verge / Mihomo:${NC}\n"
-    printf "  → http://%s:8080/clash.yaml\n\n" "$server_ip"
+    printf "  → http://%s:8080/%s\n\n" "$server_ip" "$CLASH_PATH"
 
     printf "  ${CYAN}V2Ray (единая подписка Base64):${NC}\n"
     printf "  → http://%s:8080/%s\n\n" "$server_ip" "$SUB_PATH"
