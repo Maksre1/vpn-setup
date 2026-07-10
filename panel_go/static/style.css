@@ -396,6 +396,10 @@ body {
 select.form-control {
     color: var(--text) !important;
     background-color: var(--bg-input) !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    height: 35px !important;
+    line-height: 35px !important;
 }
 select.form-control option {
     background-color: var(--bg-panel) !important;
