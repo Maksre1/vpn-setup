@@ -147,7 +147,7 @@ func createAdmin(username, password string) {
 }
 
 func initTemplateCache() {
-	pages := []string{"dashboard.html", "users.html", "logs.html", "settings.html", "login.html"}
+	pages := []string{"dashboard.html", "users.html", "inbounds.html", "logs.html", "settings.html", "login.html"}
 	for _, page := range pages {
 		t := template.New(page).Funcs(template.FuncMap{
 			"format_traffic": formatTraffic,

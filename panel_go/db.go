@@ -125,6 +125,11 @@ func initDB() {
 			rx_bytes INTEGER NOT NULL,
 			tx_bytes INTEGER NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS user_inbounds (
+			user_id INTEGER NOT NULL,
+			inbound_id INTEGER NOT NULL,
+			PRIMARY KEY (user_id, inbound_id)
+		);`,
 	}
 
 	for _, q := range queries {
@@ -142,6 +147,24 @@ func initDB() {
 	migrateUsedTrafficBytes()
 	migrateRouteWarp()
 	migrateInbounds()
+	migrateUserInbounds()
+}
+
+func migrateUserInbounds() {
+	// If the user_inbounds table was just created, it might be empty while users and inbounds exist.
+	// To preserve existing access, we map all existing users to all existing inbounds if user_inbounds is totally empty
+	// but users exist.
+	var count int
+	_ = db.QueryRow("SELECT COUNT(*) FROM user_inbounds").Scan(&count)
+	if count == 0 {
+		log.Println("Migrating database: populating user_inbounds for existing users...")
+		_, err := db.Exec("INSERT INTO user_inbounds (user_id, inbound_id) SELECT u.id, i.id FROM users u CROSS JOIN inbounds i")
+		if err != nil {
+			log.Printf("Warning: user_inbounds migration failed: %v", err)
+		} else {
+			log.Println("user_inbounds migration successful.")
+		}
+	}
 }
 
 func migrateUsedTrafficBytes() {
@@ -614,7 +637,7 @@ stats:
 	_ = exec.Command("chown", "hysteria:hysteria", aclPath).Run()
 
 	_ = exec.Command("systemctl", "restart", "hysteria-server").Run()
-	updateSingboxUsers()
+	updateXrayConfig()
 }
 
 func syncAllUsersToConfigs() {
@@ -650,6 +673,7 @@ type SBUser struct {
 	Name     string `json:"name,omitempty"`
 	UUID     string `json:"uuid,omitempty"`
 	Password string `json:"password,omitempty"`
+	Method   string `json:"method,omitempty"`
 }
 
 type SBRealityHandshake struct {
@@ -699,45 +723,140 @@ type SBRule struct {
 	Outbound string   `json:"outbound"`
 }
 
-type SBRoute struct {
-	Rules []SBRule `json:"rules"`
-	Final string   `json:"final"`
+type XRLog struct {
+	Loglevel string `json:"loglevel"`
 }
 
-type SBConfig struct {
-	Inbounds  []SBInbound  `json:"inbounds"`
-	Outbounds []SBOutbound `json:"outbounds"`
-	Route     SBRoute      `json:"route"`
+type XRClient struct {
+	ID       string `json:"id,omitempty"`
+	Password string `json:"password,omitempty"`
+	Method   string `json:"method,omitempty"`
+	Email    string `json:"email"`
+	Flow     string `json:"flow,omitempty"`
 }
 
-func updateSingboxUsers() {
-	rows, err := db.Query("SELECT username, password, protocol, route_warp FROM users WHERE is_active=1")
+type XRInboundSettings struct {
+	Decryption string     `json:"decryption,omitempty"`
+	Clients    []XRClient `json:"clients,omitempty"`
+	Method     string     `json:"method,omitempty"`
+	Password   string     `json:"password,omitempty"`
+	Network    string     `json:"network,omitempty"`
+}
+
+type XRRealitySettings struct {
+	Show        bool     `json:"show"`
+	Dest        string   `json:"dest"`
+	Xver        int      `json:"xver"`
+	ServerNames []string `json:"serverNames"`
+	PrivateKey  string   `json:"privateKey"`
+	ShortIds    []string `json:"shortIds"`
+}
+
+type XRTlsCert struct {
+	CertificateFile string `json:"certificateFile"`
+	KeyFile         string `json:"keyFile"`
+}
+
+type XRTlsSettings struct {
+	ServerName   string      `json:"serverName,omitempty"`
+	Certificates []XRTlsCert `json:"certificates,omitempty"`
+}
+
+type XRXhttpSettings struct {
+	Mode string `json:"mode"`
+	Path string `json:"path"`
+}
+
+type XRStreamSettings struct {
+	Network         string             `json:"network,omitempty"`
+	Security        string             `json:"security,omitempty"`
+	RealitySettings *XRRealitySettings `json:"realitySettings,omitempty"`
+	TlsSettings     *XRTlsSettings     `json:"tlsSettings,omitempty"`
+	XhttpSettings   *XRXhttpSettings   `json:"xhttpSettings,omitempty"`
+}
+
+type XRSniffing struct {
+	Enabled      bool     `json:"enabled"`
+	DestOverride []string `json:"destOverride"`
+}
+
+type XRInbound struct {
+	Port           int                `json:"port"`
+	Listen         string             `json:"listen,omitempty"`
+	Protocol       string             `json:"protocol"`
+	Tag            string             `json:"tag"`
+	Settings       *XRInboundSettings `json:"settings,omitempty"`
+	StreamSettings *XRStreamSettings  `json:"streamSettings,omitempty"`
+	Sniffing       *XRSniffing        `json:"sniffing,omitempty"`
+}
+
+type XROutbound struct {
+	Protocol    string `json:"protocol"`
+	Tag         string `json:"tag"`
+	SendThrough string `json:"sendThrough,omitempty"`
+}
+
+type XRRoutingRule struct {
+	Type        string   `json:"type"`
+	OutboundTag string   `json:"outboundTag"`
+	User        []string `json:"user,omitempty"`
+}
+
+type XRRouting struct {
+	DomainStrategy string          `json:"domainStrategy"`
+	Rules          []XRRoutingRule `json:"rules"`
+}
+
+type XRConfig struct {
+	Log       XRLog        `json:"log"`
+	Inbounds  []XRInbound  `json:"inbounds"`
+	Outbounds []XROutbound `json:"outbounds"`
+	Routing   *XRRouting   `json:"routing,omitempty"`
+}
+
+func updateXrayConfig() {
+	rows, err := db.Query("SELECT id, username, password, protocol, route_warp FROM users WHERE is_active=1")
 	if err != nil {
-		log.Printf("Error querying users for Sing-box: %v", err)
+		log.Printf("Error querying users for Xray: %v", err)
 		return
 	}
 	defer rows.Close()
 
-	var allUsers []User
+	userByID := make(map[int]User)
 	var warpUsernames []string
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.Username, &u.Password, &u.Protocol, &u.RouteWarp); err == nil {
-			allUsers = append(allUsers, u)
+		if err := rows.Scan(&u.ID, &u.Username, &u.Password, &u.Protocol, &u.RouteWarp); err == nil {
+			userByID[u.ID] = u
 			if u.RouteWarp == 1 {
 				warpUsernames = append(warpUsernames, u.Username)
 			}
 		}
 	}
 
+	uiRows, err := db.Query("SELECT user_id, inbound_id FROM user_inbounds")
+	if err != nil {
+		log.Printf("Error querying user_inbounds: %v", err)
+		return
+	}
+	defer uiRows.Close()
+
+	inboundUsers := make(map[int][]int)
+	for uiRows.Next() {
+		var uid, iid int
+		if err := uiRows.Scan(&uid, &iid); err == nil {
+			inboundUsers[iid] = append(inboundUsers[iid], uid)
+		}
+	}
+
 	ibRows, err := db.Query("SELECT id, remark, protocol, port, settings FROM inbounds WHERE is_active=1 AND protocol IN ('vless', 'trojan', 'shadowsocks')")
 	if err != nil {
-		log.Printf("Error querying active inbounds for Sing-box: %v", err)
+		log.Printf("Error querying active inbounds for Xray: %v", err)
 		return
 	}
 	defer ibRows.Close()
 
-	var inbounds []SBInbound
+	var inbounds []XRInbound
 
 	for ibRows.Next() {
 		var id int
@@ -750,59 +869,80 @@ func updateSingboxUsers() {
 				settings = make(map[string]interface{})
 			}
 
-			var sbUsers []SBUser
-			for _, u := range allUsers {
-				if u.Protocol == "all" || u.Protocol == protocol {
-					if protocol == "vless" {
-						sbUsers = append(sbUsers, SBUser{Name: u.Username, UUID: getUUID(u.Password)})
-					} else {
-						sbUsers = append(sbUsers, SBUser{Name: u.Username, Password: u.Password})
+			var xrClients []XRClient
+			for _, uid := range inboundUsers[id] {
+				u, exists := userByID[uid]
+				if !exists {
+					continue
+				}
+				if protocol == "vless" {
+					xrClients = append(xrClients, XRClient{Email: u.Username, ID: getUUID(u.Password)})
+				} else if protocol == "shadowsocks" {
+					cipher := "chacha20-poly1305"
+					if c, ok := settings["cipher"].(string); ok && c != "" && c != "aes-256-gcm" {
+						cipher = c
 					}
+					xrClients = append(xrClients, XRClient{Email: u.Username, Password: u.Password, Method: cipher})
+				} else {
+					xrClients = append(xrClients, XRClient{Email: u.Username, Password: u.Password})
 				}
 			}
 
-			inb := SBInbound{
-				Type:       protocol,
-				Tag:        fmt.Sprintf("%s-in-%d", protocol, id),
-				Listen:     "::",
-				ListenPort: port,
-				Users:      sbUsers,
-			}
-
-			if sniffEnabled, _ := settings["sniffing"].(bool); sniffEnabled {
-				inb.Sniff = &SBSniff{
-					Enabled:             true,
-					OverrideDestination: true,
-				}
+			inb := XRInbound{
+				Port:     port,
+				Listen:   "::",
+				Protocol: protocol,
+				Tag:      fmt.Sprintf("%s-in-%d", protocol, id),
+				Settings: &XRInboundSettings{},
 			}
 
 			if protocol == "vless" {
-				if settings["security"] == "reality" {
-					inb.TLS = &SBTLS{
-						Enabled:    true,
-						ServerName: fmt.Sprintf("%v", settings["sni"]),
-						Reality: &SBReality{
-							Enabled: true,
-							Handshake: SBRealityHandshake{
-								Server:     fmt.Sprintf("%v", settings["sni"]),
-								ServerPort: 443,
-							},
-							PrivateKey: fmt.Sprintf("%v", settings["private_key"]),
-							ShortId:    []string{fmt.Sprintf("%v", settings["short_id"])},
-						},
+				inb.Settings.Decryption = "none"
+				inb.Settings.Clients = xrClients
+
+				transport := "xhttp"
+				if t, ok := settings["transport"].(string); ok && t != "" {
+					transport = t
+				}
+				inb.StreamSettings = &XRStreamSettings{
+					Network: transport,
+				}
+
+				if transport == "xhttp" {
+					inb.StreamSettings.XhttpSettings = &XRXhttpSettings{
+						Mode: "auto",
+						Path: "/xhttp",
 					}
-					if dest, ok := settings["reality_dest"].(string); ok && dest != "" {
-						parts := strings.Split(dest, ":")
-						inb.TLS.Reality.Handshake.Server = parts[0]
-						if len(parts) > 1 {
-							p, _ := strconv.Atoi(parts[1])
-							if p > 0 {
-								inb.TLS.Reality.Handshake.ServerPort = p
-							}
-						}
+					if p, ok := settings["path"].(string); ok && p != "" {
+						inb.StreamSettings.XhttpSettings.Path = p
+					}
+				}
+
+				if settings["security"] == "reality" {
+					inb.StreamSettings.Security = "reality"
+
+					dest := "apps.apple.com:443"
+					if d, ok := settings["reality_dest"].(string); ok && d != "" {
+						dest = d
+					}
+
+					sni := "apps.apple.com"
+					if s, ok := settings["sni"].(string); ok && s != "" {
+						sni = s
+					}
+
+					inb.StreamSettings.RealitySettings = &XRRealitySettings{
+						Show:        false,
+						Dest:        dest,
+						Xver:        0,
+						ServerNames: []string{sni},
+						PrivateKey:  fmt.Sprintf("%v", settings["private_key"]),
+						ShortIds:    []string{fmt.Sprintf("%v", settings["short_id"])},
 					}
 				}
 			} else if protocol == "trojan" {
+				inb.Settings.Clients = xrClients
+
 				certPath := "/etc/hysteria/certs/server.crt"
 				keyPath := "/etc/hysteria/certs/server.key"
 				if c, ok := settings["cert_path"].(string); ok && c != "" {
@@ -811,15 +951,27 @@ func updateSingboxUsers() {
 				if k, ok := settings["key_path"].(string); ok && k != "" {
 					keyPath = k
 				}
-				inb.TLS = &SBTLS{
-					Enabled:  true,
-					CertPath: certPath,
-					KeyPath:  keyPath,
+
+				inb.StreamSettings = &XRStreamSettings{
+					Network:  "tcp",
+					Security: "tls",
+					TlsSettings: &XRTlsSettings{
+						Certificates: []XRTlsCert{
+							{
+								CertificateFile: certPath,
+								KeyFile:         keyPath,
+							},
+						},
+					},
 				}
 			} else if protocol == "shadowsocks" {
-				inb.Method = "aes-256-gcm"
-				if c, ok := settings["cipher"].(string); ok && c != "" {
-					inb.Method = c
+				inb.Settings.Clients = xrClients
+			}
+
+			if sniffEnabled, _ := settings["sniffing"].(bool); sniffEnabled {
+				inb.Sniffing = &XRSniffing{
+					Enabled:      true,
+					DestOverride: []string{"http", "tls", "quic"},
 				}
 			}
 
@@ -827,37 +979,45 @@ func updateSingboxUsers() {
 		}
 	}
 
-	outbounds := []SBOutbound{
-		{Type: "direct", Tag: "direct-out"},
-		{Type: "direct", Tag: "warp-out", LocalAddress: "172.16.0.2"},
+	outbounds := []XROutbound{
+		{Protocol: "freedom", Tag: "direct-out"},
+		{Protocol: "freedom", Tag: "warp-out", SendThrough: "172.16.0.2"},
 	}
 
-	var rules []SBRule
+	var rules []XRRoutingRule
 	if len(warpUsernames) > 0 {
-		rules = append(rules, SBRule{
-			User:     warpUsernames,
-			Outbound: "warp-out",
+		rules = append(rules, XRRoutingRule{
+			Type:        "field",
+			OutboundTag: "warp-out",
+			User:        warpUsernames,
 		})
 	}
 
-	cfg := SBConfig{
-		Inbounds:  inbounds,
-		Outbounds: outbounds,
-		Route: SBRoute{
-			Rules: rules,
-			Final: "direct-out",
-		},
+	var routing *XRRouting
+	if len(rules) > 0 {
+		routing = &XRRouting{
+			DomainStrategy: "AsIs",
+			Rules:          rules,
+		}
 	}
 
-	configPath := "/etc/sing-box/config.json"
-	_ = os.MkdirAll(filepath.Dir(configPath), 0755)
+	cfg := XRConfig{
+		Log: XRLog{
+			Loglevel: "warning",
+		},
+		Inbounds:  inbounds,
+		Outbounds: outbounds,
+		Routing:   routing,
+	}
+
+	configPath := "/usr/local/etc/xray/config.json"
 	
 	bytes, err := json.MarshalIndent(cfg, "", "  ")
 	if err == nil {
 		_ = os.WriteFile(configPath, bytes, 0600)
 	}
 
-	_ = exec.Command("systemctl", "restart", "sing-box").Run()
+	_ = exec.Command("systemctl", "restart", "xray").Run()
 }
 
 func migrateInbounds() {
@@ -888,7 +1048,7 @@ func migrateInbounds() {
 		h2 := getHysteria2Config()
 		mieru := getMieruConfig()
 
-		// 1. VLESS Reality Inbound
+		// 1. VLESS XHTTP Inbound
 		vlessPortStr := sb["SB_VLESS_PORT"]
 		if vlessPortStr != "" {
 			vlessPort, _ := strconv.Atoi(vlessPortStr)
@@ -901,11 +1061,12 @@ func migrateInbounds() {
 					"private_key":  sb["SB_REALITY_PRIV_KEY"],
 					"public_key":   sb["SB_REALITY_PUB_KEY"],
 					"short_id":     sb["SB_REALITY_SHORT_ID"],
-					"transport":    "tcp",
+					"transport":    "xhttp",
+					"path":         "/xhttp",
 					"sniffing":     true,
 				})
 				_, _ = db.Exec("INSERT INTO inbounds (remark, protocol, port, settings, is_active) VALUES (?, ?, ?, ?, 1)",
-					"VLESS-Reality", "vless", vlessPort, string(vlessSettings))
+					"VLESS-XHTTP", "vless", vlessPort, string(vlessSettings))
 			}
 		}
 

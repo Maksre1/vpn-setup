@@ -579,8 +579,29 @@ func getShadowsocksUri(config map[string]string, serverIP, password string) stri
 }
 
 func generateRealityKeyPair() (string, string, error) {
-	cmd := exec.Command("/usr/local/bin/sing-box", "generate", "reality-keypair")
+	// Try xray first
+	cmd := exec.Command("/usr/local/bin/xray", "x25519")
 	out, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(out), "\n")
+		var priv, pub string
+		for _, l := range lines {
+			l = strings.TrimSpace(l)
+			if strings.HasPrefix(l, "Private key:") {
+				priv = strings.TrimSpace(strings.TrimPrefix(l, "Private key:"))
+			}
+			if strings.HasPrefix(l, "Public key:") {
+				pub = strings.TrimSpace(strings.TrimPrefix(l, "Public key:"))
+			}
+		}
+		if priv != "" && pub != "" {
+			return priv, pub, nil
+		}
+	}
+
+	// Fallback to sing-box
+	cmd = exec.Command("/usr/local/bin/sing-box", "generate", "reality-keypair")
+	out, err = cmd.Output()
 	if err != nil {
 		return "", "", err
 	}

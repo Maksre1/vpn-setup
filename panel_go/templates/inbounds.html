@@ -37,7 +37,8 @@
                         </label>
                     </td>
                     <td style="white-space:nowrap;">
-                        <button class="btn btn-sm btn-icon" onclick="openEditInboundModal({{ .ID }}, '{{ .Remark }}', '{{ .Protocol }}', {{ .Port }}, {{ .IsActive }}, '{{ .Settings }}')" title="Редактировать"><i class="bi bi-pencil"></i></button>
+                                                <button class="btn btn-sm btn-icon" onclick="openEditInboundModal({{ .ID }}, '{{ .Remark }}', '{{ .Protocol }}', {{ .Port }}, {{ .IsActive }}, '{{ .Settings }}')" title="Редактировать"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-icon" onclick="openClientsModal({{ .ID }}, '{{ .Remark }}')" title="Клиенты"><i class="bi bi-people"></i></button>
                         <button class="btn btn-sm btn-icon btn-danger" onclick="deleteInbound({{ .ID }}, '{{ .Remark }}')" title="Удалить"><i class="bi bi-trash3"></i></button>
                     </td>
                 </tr>
@@ -155,11 +156,16 @@
                     <div class="form-group">
                         <label>Транспортный протокол</label>
                         <select name="transport" id="formInbTransport" class="form-control">
+                            <option value="xhttp">xhttp (Xray-core)</option>
                             <option value="tcp">TCP (RAW)</option>
                             <option value="ws">WebSocket</option>
                             <option value="grpc">gRPC</option>
                             <option value="udp">UDP (Mieru)</option>
                         </select>
+                    </div>
+                    <div class="form-group" id="xhttpPathGroup">
+                        <label>Путь (Path)</label>
+                        <input type="text" name="path" id="formInbPath" class="form-control mono" value="/xhttp" placeholder="/xhttp">
                     </div>
                     <div class="form-group">
                         <label>Proxy Protocol</label>
@@ -280,6 +286,24 @@
 </div>
 
 <style>
+
+.form-group {
+    display: flex;
+    align-items: center;
+    margin-bottom: 16px;
+}
+.form-group label {
+    flex: 0 0 160px;
+    text-align: left;
+    margin-right: 16px;
+    margin-bottom: 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+.form-group .form-control, .form-group > div {
+    flex: 1;
+}
+
 .switch {
   position: relative;
   display: inline-block;
@@ -382,12 +406,13 @@ function handleProtocolChange(proto) {
 
     // Autofill defaults
     if (proto === 'vless') {
-        document.getElementById('formInbTransport').value = 'tcp';
+        document.getElementById('formInbTransport').value = 'xhttp';
     } else if (proto === 'mieru') {
         document.getElementById('formInbTransport').value = 'udp';
     } else {
         document.getElementById('formInbTransport').value = 'tcp';
     }
+    handleTransportChange();
 
     // Show/Hide specific fields inside TLS section
     document.getElementById('h2CnGroup').style.display = (proto === 'hysteria2') ? 'block' : 'none';
@@ -457,6 +482,9 @@ function openEditInboundModal(id, remark, protocol, port, isActive, settingsJSON
         const data = JSON.parse(settingsJSON);
         document.getElementById('formInbSniffing').checked = (data.sniffing === true);
         if (data.transport) document.getElementById('formInbTransport').value = data.transport;
+        if (data.path) document.getElementById('formInbPath').value = data.path;
+        
+        handleTransportChange();
         
         if (protocol === 'vless') {
             if (data.security) document.getElementById('formInbSecurity').value = data.security;
@@ -562,5 +590,81 @@ function deleteInbound(id, remark) {
     })
     .catch(() => showToast('Произошла ошибка при удалении', 'danger'));
 }
+
+function handleTransportChange() {
+    const transport = document.getElementById('formInbTransport').value;
+    const pathGroup = document.getElementById('xhttpPathGroup');
+    if (transport === 'xhttp' || transport === 'ws' || transport === 'grpc') {
+        pathGroup.style.display = 'block';
+    } else {
+        pathGroup.style.display = 'none';
+    }
+}
+
+document.getElementById('formInbTransport').addEventListener('change', handleTransportChange);
+
+let currentClientsInboundId = 0;
+
+function openClientsModal(id, remark) {
+    currentClientsInboundId = id;
+    document.getElementById('modalClientsTitle').innerText = 'Клиенты: ' + remark;
+    document.getElementById('clientsModal').classList.add('active');
+    
+    // Fetch users and currently mapped clients
+    Promise.all([
+        fetch('/api/users').then(r => r.json()),
+        fetch('/api/inbounds/' + id + '/clients').then(r => r.json())
+    ]).then(([usersRes, clientsRes]) => {
+        const container = document.getElementById('clientsListContainer');
+        container.innerHTML = '';
+        
+        if (usersRes.ok && clientsRes.ok) {
+            const mappedIds = new Set(clientsRes.client_ids);
+            
+            if (usersRes.users.length === 0) {
+                container.innerHTML = '<div style="text-align:center; color:var(--text-secondary);">Нет доступных пользователей. Сначала создайте пользователя в разделе "Пользователи".</div>';
+                return;
+            }
+            
+            usersRes.users.forEach(u => {
+                const checked = mappedIds.has(u.id) ? 'checked' : '';
+                container.innerHTML += `
+                    <label class="client-checkbox-item">
+                        <input type="checkbox" class="client-checkbox" value="${u.id}" ${checked}>
+                        <div>
+                            <div style="font-weight:600;">${u.username}</div>
+                            <div style="font-size:12px; color:var(--text-secondary);">ID: ${u.id} | Протокол: ${u.protocol}</div>
+                        </div>
+                    </label>
+                `;
+            });
+        }
+    });
+}
+
+function closeClientsModal() {
+    document.getElementById('clientsModal').classList.remove('active');
+}
+
+function saveClients() {
+    const checkboxes = document.querySelectorAll('.client-checkbox:checked');
+    const clientIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
+    
+    fetch('/api/inbounds/' + currentClientsInboundId + '/clients', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ client_ids: clientIds })
+    }).then(r => r.json()).then(res => {
+        if (res.ok) {
+            closeClientsModal();
+            // Show toast or alert
+        } else {
+            alert('Ошибка: ' + res.msg);
+        }
+    });
+}
+
 </script>
 {{ end }}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,8 +96,9 @@ func main() {
 
 		var username, password, protocol string
 		var isActive int
-		err = db.QueryRow("SELECT username, password, protocol, is_active FROM users WHERE sub_path=? OR sub_path=?", token, "sub-"+token).
-			Scan(&username, &password, &protocol, &isActive)
+		var userID int
+		err = db.QueryRow("SELECT id, username, password, protocol, is_active FROM users WHERE sub_path=? OR sub_path=?", token, "sub-"+token).
+			Scan(&userID, &username, &password, &protocol, &isActive)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -121,7 +123,7 @@ func main() {
 		}
 
 		// Read active inbounds from SQLite database
-		ibRows, err := db.Query("SELECT protocol, remark, port, settings FROM inbounds WHERE is_active=1")
+		ibRows, err := db.Query("SELECT i.protocol, i.remark, i.port, i.settings FROM inbounds i JOIN user_inbounds ui ON i.id = ui.inbound_id WHERE i.is_active=1 AND ui.user_id=?", userID)
 		if err != nil {
 			log.Printf("Inbounds query error: %v", err)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -219,7 +221,11 @@ func generateClashYAML(serverIP string, username string, password string, protoc
 			pubKey, _ := ib.Settings["public_key"].(string)
 			shortId, _ := ib.Settings["short_id"].(string)
 			sni, _ := ib.Settings["sni"].(string)
-			proxies = append(proxies, fmt.Sprintf(`  - name: %s
+			transport := "xhttp"
+			if t, ok := ib.Settings["transport"].(string); ok && t != "" {
+				transport = t
+			}
+			proxyYaml := fmt.Sprintf(`  - name: %s
     type: vless
     server: %s
     port: %d
@@ -227,11 +233,24 @@ func generateClashYAML(serverIP string, username string, password string, protoc
     udp: true
     tls: true
     servername: %s
-    network: tcp
+    network: %s
     reality-opts:
       public-key: %s
       short-id: %s
-    client-fingerprint: firefox`, ib.Remark, serverIP, ib.Port, uuid, sni, pubKey, shortId))
+    client-fingerprint: firefox`, ib.Remark, serverIP, ib.Port, uuid, sni, transport, pubKey, shortId)
+
+			if transport == "xhttp" {
+				path := "/xhttp"
+				if p, ok := ib.Settings["path"].(string); ok && p != "" {
+					path = p
+				}
+				proxyYaml += fmt.Sprintf(`
+    xhttp-opts:
+      path: %s
+      mode: auto`, path)
+			}
+
+			proxies = append(proxies, proxyYaml)
 			proxyNames = append(proxyNames, ib.Remark)
 
 		case "trojan":
@@ -389,7 +408,7 @@ func generateSingboxJSON(serverIP string, username string, password string, prot
 		Username   string      `json:"username,omitempty"`
 		UUID       string      `json:"uuid,omitempty"`
 		Method     string      `json:"method,omitempty"`
-		Transport  string      `json:"transport,omitempty"`
+		Transport  interface{} `json:"transport,omitempty"`
 		Obfs       *ObfsConfig `json:"obfs,omitempty"`
 		TLS        *TLSConfig  `json:"tls,omitempty"`
 	}
@@ -450,6 +469,11 @@ func generateSingboxJSON(serverIP string, username string, password string, prot
 			pubKey, _ := ib.Settings["public_key"].(string)
 			shortId, _ := ib.Settings["short_id"].(string)
 			sni, _ := ib.Settings["sni"].(string)
+			transport := "xhttp"
+			if t, ok := ib.Settings["transport"].(string); ok && t != "" {
+				transport = t
+			}
+
 			out := Outbound{
 				Type:       "vless",
 				Tag:        ib.Remark,
@@ -470,6 +494,28 @@ func generateSingboxJSON(serverIP string, username string, password string, prot
 					},
 				},
 			}
+
+			if transport == "xhttp" {
+				path := "/xhttp"
+				if p, ok := ib.Settings["path"].(string); ok && p != "" {
+					path = p
+				}
+				out.Transport = map[string]interface{}{
+					"type": "xhttp",
+					"path": path,
+				}
+			} else if transport != "tcp" && transport != "" {
+				// Fallback/support for other transports like ws
+				path := "/ws"
+				if p, ok := ib.Settings["path"].(string); ok && p != "" {
+					path = p
+				}
+				out.Transport = map[string]interface{}{
+					"type": transport,
+					"path": path,
+				}
+			}
+
 			outbounds = append(outbounds, out)
 			selectorOutbounds = append(selectorOutbounds, ib.Remark)
 
@@ -553,8 +599,20 @@ func generateBase64URIs(serverIP string, username string, password string, proto
 			shortId, _ := ib.Settings["short_id"].(string)
 			sni, _ := ib.Settings["sni"].(string)
 			uuid := getUUID(password)
-			uri := fmt.Sprintf("vless://%s@%s:%d?security=reality&sni=%s&fp=firefox&pbk=%s&sid=%s&type=tcp#%s",
-				uuid, serverIP, ib.Port, sni, pubKey, shortId, ib.Remark)
+			transport := "xhttp"
+			if t, ok := ib.Settings["transport"].(string); ok && t != "" {
+				transport = t
+			}
+			uri := fmt.Sprintf("vless://%s@%s:%d?security=reality&sni=%s&fp=firefox&pbk=%s&sid=%s&type=%s",
+				uuid, serverIP, ib.Port, sni, pubKey, shortId, transport)
+			if transport == "xhttp" {
+				path := "/xhttp"
+				if p, ok := ib.Settings["path"].(string); ok && p != "" {
+					path = p
+				}
+				uri += "&path=" + url.QueryEscape(path)
+			}
+			uri += "#" + ib.Remark
 			uris = append(uris, uri)
 
 		case "trojan":

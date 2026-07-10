@@ -663,7 +663,7 @@ install_hysteria2() {
         -subj "/CN=${H2_CERT_CN}/O=Example/C=US" \
         >> "$LOG_FILE" 2>&1
 
-    chmod 600 "$H2_CERT_DIR/server.key"
+    chmod 644 "$H2_CERT_DIR/server.key"
     chmod 644 "$H2_CERT_DIR/server.crt"
 
     cat > "$H2_CONFIG_DIR/config.yaml" <<EOF
@@ -765,7 +765,7 @@ EOF
 # 6.2 install_singbox
 # =============================================================================
 install_singbox() {
-    step_begin "Sing-box (VLESS/Trojan/Shadowsocks)"
+    step_begin "Xray-core (VLESS/Trojan/Shadowsocks)"
     if is_done "install_singbox"; then
         if [[ -f "$STATE_DIR/singbox.env" ]]; then
             source "$STATE_DIR/singbox.env"
@@ -773,35 +773,32 @@ install_singbox() {
         step_skip; return 0
     fi
 
-    log_step "Загрузка и установка Sing-box..."
-    local arch=$(uname -m)
-    local sb_arch="amd64"
-    if [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
-        sb_arch="arm64"
-    fi
-    local latest_ver=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | sed 's/^v//')
-    if [[ -z "$latest_ver" ]]; then
-        latest_ver="1.8.10" # fallback
-    fi
-    if curl -Lo /tmp/sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${sb_arch}.tar.gz" >> "$LOG_FILE" 2>&1; then
-        tar -xzf /tmp/sing-box.tar.gz -C /tmp/ >> "$LOG_FILE" 2>&1
-        mv "/tmp/sing-box-${latest_ver}-linux-${sb_arch}/sing-box" /usr/local/bin/sing-box >> "$LOG_FILE" 2>&1
-        chmod +x /usr/local/bin/sing-box >> "$LOG_FILE" 2>&1
-        log_ok "Sing-box установлен"
+    # Остановка и удаление sing-box если остался
+    systemctl stop sing-box 2>/dev/null || true
+    systemctl disable sing-box 2>/dev/null || true
+    rm -f /etc/systemd/system/sing-box.service
+
+    log_step "Загрузка и установка Xray-core..."
+    local _xray_script
+    _xray_script=$(mktemp)
+    if curl -sSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o "$_xray_script" >> "$LOG_FILE" 2>&1 \
+        && bash "$_xray_script" install >> "$LOG_FILE" 2>&1; then
+        rm -f "$_xray_script"
+        log_ok "Xray-core установлен"
     else
-        log_fail "Не удалось установить Sing-box"
+        log_fail "Не удалось установить Xray-core"
         return 1
     fi
 
-    log_step "Генерация ключей и портов для Sing-box..."
+    log_step "Генерация ключей и портов для Xray-core..."
     SB_VLESS_PORT=$(find_free_port tcp 50100 55000)
     SB_TROJAN_PORT=$(find_free_port tcp 55100 60000)
     SB_SS_PORT=$(find_free_port tcp 60100 65000)
 
-    # Reality Keys
-    local keys=$(/usr/local/bin/sing-box generate reality-keypair)
+    # Reality Keys via xray
+    local keys=$(/usr/local/bin/xray x25519)
     SB_REALITY_PRIV_KEY=$(echo "$keys" | grep "PrivateKey:" | awk '{print $2}')
-    SB_REALITY_PUB_KEY=$(echo "$keys" | grep "PublicKey:" | awk '{print $2}')
+    SB_REALITY_PUB_KEY=$(echo "$keys" | grep "Password (PublicKey):" | awk '{print $3}')
     SB_REALITY_SHORT_ID=$(openssl rand -hex 8)
     
     local sni_candidates=(
@@ -813,7 +810,7 @@ install_singbox() {
     local sni_index=$(( RANDOM % ${#sni_candidates[@]} ))
     SB_REALITY_SNI="${sni_candidates[$sni_index]}"
 
-    mkdir -p "/etc/sing-box"
+    mkdir -p "/usr/local/etc/xray"
 
     cat > "$STATE_DIR/singbox.env" <<EOF
 SB_VLESS_PORT=${SB_VLESS_PORT}
@@ -827,47 +824,29 @@ EOF
     chmod 600 "$STATE_DIR/singbox.env"
 
     # UFW ports
-    ufw allow "$SB_VLESS_PORT"/tcp comment "Sing-box VLESS TCP" >> "$LOG_FILE" 2>&1
-    ufw allow "$SB_TROJAN_PORT"/tcp comment "Sing-box Trojan TCP" >> "$LOG_FILE" 2>&1
-    ufw allow "$SB_SS_PORT"/tcp comment "Sing-box Shadowsocks TCP" >> "$LOG_FILE" 2>&1
-    ufw allow "$SB_SS_PORT"/udp comment "Sing-box Shadowsocks UDP" >> "$LOG_FILE" 2>&1
-
-    # Systemd service
-    cat > /etc/systemd/system/sing-box.service <<EOF
-[Unit]
-Description=Sing-box Service
-After=network.target nss-lookup.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/etc/sing-box
-ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
-Restart=always
-RestartSec=3s
-LimitNPROC=500
-LimitNOFILE=1000000
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload >> "$LOG_FILE" 2>&1
-    systemctl enable sing-box >> "$LOG_FILE" 2>&1
+    ufw allow "$SB_VLESS_PORT"/tcp comment "Xray VLESS TCP" >> "$LOG_FILE" 2>&1
+    ufw allow "$SB_TROJAN_PORT"/tcp comment "Xray Trojan TCP" >> "$LOG_FILE" 2>&1
+    ufw allow "$SB_SS_PORT"/tcp comment "Xray Shadowsocks TCP" >> "$LOG_FILE" 2>&1
+    ufw allow "$SB_SS_PORT"/udp comment "Xray Shadowsocks UDP" >> "$LOG_FILE" 2>&1
 
     # Create dummy initial empty config so service can start initially
-    cat > /etc/sing-box/config.json <<EOF
+    cat > /usr/local/etc/xray/config.json <<EOF
 {
+  "log": {
+    "loglevel": "warning"
+  },
   "inbounds": [],
   "outbounds": [
     {
-      "type": "direct",
+      "protocol": "freedom",
       "tag": "direct"
     }
   ]
 }
 EOF
-    systemctl start sing-box >> "$LOG_FILE" 2>&1
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1
+    systemctl enable xray >> "$LOG_FILE" 2>&1
+    systemctl restart xray >> "$LOG_FILE" 2>&1
 
     mark_done "install_singbox"
     step_finish
@@ -1621,11 +1600,11 @@ do_status() {
         printf "  ${RED}●${NC}  Hysteria2             ${RED}остановлен${NC}\n"
     fi
 
-    # Sing-box
-    if systemctl is-active --quiet sing-box 2>/dev/null; then
-        printf "  ${GREEN}●${NC}  Sing-box (VLESS/...)  ${GREEN}работает${NC}\n"
+    # Xray-core
+    if systemctl is-active --quiet xray 2>/dev/null; then
+        printf "  ${GREEN}●${NC}  Xray (VLESS/...)      ${GREEN}работает${NC}\n"
     else
-        printf "  ${RED}●${NC}  Sing-box (VLESS/...)  ${RED}остановлен${NC}\n"
+        printf "  ${RED}●${NC}  Xray (VLESS/...)      ${RED}остановлен${NC}\n"
     fi
 
     # WARP
@@ -1665,9 +1644,9 @@ do_status() {
     fi
     if [[ -f "$STATE_DIR/singbox.env" ]]; then
         source "$STATE_DIR/singbox.env"
-        printf "  ${CYAN}Sing-box VLESS:${NC} порт ${SB_VLESS_PORT:-?} (TCP)\n"
-        printf "  ${CYAN}Sing-box Trojan:${NC} порт ${SB_TROJAN_PORT:-?} (TCP)\n"
-        printf "  ${CYAN}Sing-box Shadowsocks:${NC} порт ${SB_SS_PORT:-?} (TCP/UDP)\n"
+        printf "  ${CYAN}Xray VLESS:${NC} порт ${SB_VLESS_PORT:-?} (TCP / XHTTP)\n"
+        printf "  ${CYAN}Xray Trojan:${NC} порт ${SB_TROJAN_PORT:-?} (TCP)\n"
+        printf "  ${CYAN}Xray Shadowsocks:${NC} порт ${SB_SS_PORT:-?} (TCP/UDP)\n"
     fi
     if [[ -f "$STATE_DIR/subscription_path" ]]; then
         source "$STATE_DIR/subscription_path"
@@ -1953,6 +1932,15 @@ setup_panel() {
         curl -fsSL "https://raw.githubusercontent.com/Maksre1/vpn-setup/main/panel_go/vpn-panel" -o "${panel_dir}/vpn-panel" >> "$LOG_FILE" 2>&1 || true
     fi
     chmod +x "${panel_dir}/vpn-panel"
+
+    # Копирование шаблонов и статики (Go панель использует их из WorkingDirectory)
+    local panel_go_dir="${SCRIPT_DIR}/panel_go"
+    if [[ -d "${panel_go_dir}/templates" ]]; then
+        cp -r "${panel_go_dir}/templates" "${panel_dir}/"
+    fi
+    if [[ -d "${panel_go_dir}/static" ]]; then
+        cp -r "${panel_go_dir}/static" "${panel_dir}/"
+    fi
 
     # Генерируем или считываем секретный ключ PANEL_SECRET для стабильности сессий
     local panel_secret

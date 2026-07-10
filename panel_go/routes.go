@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -384,7 +385,7 @@ func setupRoutes(r *gin.Engine) {
 		} else if protocol == "hysteria2" {
 			updateHysteriaUsers()
 		} else {
-			updateSingboxUsers()
+			updateXrayConfig()
 		}
 
 		c.JSON(http.StatusOK, gin.H{"ok": true, "msg": "Подключение успешно сохранено"})
@@ -412,7 +413,7 @@ func setupRoutes(r *gin.Engine) {
 		} else if protocol == "hysteria2" {
 			updateHysteriaUsers()
 		} else {
-			updateSingboxUsers()
+			updateXrayConfig()
 		}
 
 		c.JSON(http.StatusOK, gin.H{"ok": true, "msg": "Статус изменен", "is_active": newActive})
@@ -438,11 +439,79 @@ func setupRoutes(r *gin.Engine) {
 		} else if protocol == "hysteria2" {
 			updateHysteriaUsers()
 		} else {
-			updateSingboxUsers()
+			updateXrayConfig()
 		}
 
 		c.JSON(http.StatusOK, gin.H{"ok": true, "msg": "Подключение удалено"})
 	})
+
+	auth.GET("/api/inbounds/:id/clients", func(c *gin.Context) {
+		inboundID, _ := strconv.Atoi(c.Param("id"))
+		rows, err := db.Query("SELECT user_id FROM user_inbounds WHERE inbound_id=?", inboundID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "msg": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		var clientIDs []int
+		for rows.Next() {
+			var uid int
+			if err := rows.Scan(&uid); err == nil {
+				clientIDs = append(clientIDs, uid)
+			}
+		}
+		if clientIDs == nil {
+			clientIDs = []int{}
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "client_ids": clientIDs})
+	})
+
+	auth.POST("/api/inbounds/:id/clients", func(c *gin.Context) {
+		inboundID, _ := strconv.Atoi(c.Param("id"))
+		
+		var req struct {
+			ClientIDs []int `json:"client_ids"`
+		}
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "msg": "Invalid JSON"})
+			return
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "msg": err.Error()})
+			return
+		}
+		
+		_, err = tx.Exec("DELETE FROM user_inbounds WHERE inbound_id=?", inboundID)
+		if err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "msg": err.Error()})
+			return
+		}
+
+		for _, uid := range req.ClientIDs {
+			_, err = tx.Exec("INSERT INTO user_inbounds (user_id, inbound_id) VALUES (?, ?)", uid, inboundID)
+			if err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "msg": err.Error()})
+				return
+			}
+		}
+
+		err = tx.Commit()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "msg": err.Error()})
+			return
+		}
+
+		// Update Xray config since clients changed
+		updateXrayConfig()
+
+		c.JSON(http.StatusOK, gin.H{"ok": true, "msg": "Клиенты обновлены"})
+	})
+
 
 	// Add an endpoint to generate Reality X25519 Keys on backend
 	auth.POST("/api/reality/generate-keys", func(c *gin.Context) {
@@ -518,8 +587,20 @@ func setupRoutes(r *gin.Engine) {
 					pubKey, _ := settings["public_key"].(string)
 					shortId, _ := settings["short_id"].(string)
 					sni, _ := settings["sni"].(string)
-					uri = fmt.Sprintf("vless://%s@%s:%d?security=reality&sni=%s&fp=firefox&pbk=%s&sid=%s&type=tcp#%s",
-						uuid, serverIP, port, sni, pubKey, shortId, remark)
+					transport := "xhttp"
+					if t, ok := settings["transport"].(string); ok && t != "" {
+						transport = t
+					}
+					uri = fmt.Sprintf("vless://%s@%s:%d?security=reality&sni=%s&fp=firefox&pbk=%s&sid=%s&type=%s",
+						uuid, serverIP, port, sni, pubKey, shortId, transport)
+					if transport == "xhttp" {
+						path := "/xhttp"
+						if p, ok := settings["path"].(string); ok && p != "" {
+							path = p
+						}
+						uri += "&path=" + url.QueryEscape(path)
+					}
+					uri += "#" + remark
 
 				case "trojan":
 					uri = fmt.Sprintf("trojan://%s@%s:%d?security=tls&sni=%s&allowInsecure=1#%s",
@@ -1038,5 +1119,31 @@ func setupRoutes(r *gin.Engine) {
 			time.Sleep(1 * time.Second)
 			_ = exec.Command("reboot").Run()
 		}()
+	})
+
+	auth.GET("/api/users", func(c *gin.Context) {
+		rows, err := db.Query("SELECT id, username, protocol FROM users")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "msg": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		type APIUser struct {
+			ID       int    `json:"id"`
+			Username string `json:"username"`
+			Protocol string `json:"protocol"`
+		}
+		var users []APIUser
+		for rows.Next() {
+			var u APIUser
+			if err := rows.Scan(&u.ID, &u.Username, &u.Protocol); err == nil {
+				users = append(users, u)
+			}
+		}
+		if users == nil {
+			users = []APIUser{}
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "users": users})
 	})
 }
