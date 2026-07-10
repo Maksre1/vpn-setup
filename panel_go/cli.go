@@ -29,6 +29,7 @@ func cliAddUser(args []string) {
 	var traffic int64 = 0
 	var speed int64 = 0
 	protocol := "all"
+	routeWarp := 0
 
 	// Parse arguments manually
 	for i := 1; i < len(args); i++ {
@@ -53,6 +54,15 @@ func cliAddUser(args []string) {
 				protocol = args[i+1]
 				i++
 			}
+		case "--route-warp":
+			if i+1 < len(args) {
+				if args[i+1] == "1" || args[i+1] == "on" || args[i+1] == "true" {
+					routeWarp = 1
+				} else {
+					routeWarp = 0
+				}
+				i++
+			}
 		}
 	}
 
@@ -67,15 +77,15 @@ func cliAddUser(args []string) {
 	if speed < 0 {
 		log.Fatalf("Ошибка: Лимит скорости не может быть отрицательным.")
 	}
-	if protocol != "all" && protocol != "mieru" && protocol != "hysteria2" {
-		log.Fatalf("Ошибка: Недопустимый протокол. Допустимые: all, mieru, hysteria2.")
+	if protocol != "all" && protocol != "mieru" && protocol != "hysteria2" && protocol != "vless" && protocol != "trojan" && protocol != "shadowsocks" {
+		log.Fatalf("Ошибка: Недопустимый протокол. Допустимые: all, mieru, hysteria2, vless, trojan, shadowsocks.")
 	}
 
 	password := genPassword(24)
 	subPath := genRandomPath("sub", "")
 
 	_, err := db.Exec(`INSERT INTO users (username, password, expire_date, traffic_limit_gb, speed_limit_mbps, protocol, sub_path, is_active, route_warp)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)`, username, password, expire, traffic, speed, protocol, subPath)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`, username, password, expire, traffic, speed, protocol, subPath, routeWarp)
 	if err != nil {
 		log.Fatalf("Ошибка при создании пользователя в БД: %v", err)
 	}

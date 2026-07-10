@@ -762,6 +762,118 @@ EOF
 }
 
 # =============================================================================
+# 6.2 install_singbox
+# =============================================================================
+install_singbox() {
+    step_begin "Sing-box (VLESS/Trojan/Shadowsocks)"
+    if is_done "install_singbox"; then
+        if [[ -f "$STATE_DIR/singbox.env" ]]; then
+            source "$STATE_DIR/singbox.env"
+        fi
+        step_skip; return 0
+    fi
+
+    log_step "Загрузка и установка Sing-box..."
+    local arch=$(uname -m)
+    local sb_arch="amd64"
+    if [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
+        sb_arch="arm64"
+    fi
+    local latest_ver=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | sed 's/^v//')
+    if [[ -z "$latest_ver" ]]; then
+        latest_ver="1.8.10" # fallback
+    fi
+    if curl -Lo /tmp/sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${sb_arch}.tar.gz" >> "$LOG_FILE" 2>&1; then
+        tar -xzf /tmp/sing-box.tar.gz -C /tmp/ >> "$LOG_FILE" 2>&1
+        mv "/tmp/sing-box-${latest_ver}-linux-${sb_arch}/sing-box" /usr/local/bin/sing-box >> "$LOG_FILE" 2>&1
+        chmod +x /usr/local/bin/sing-box >> "$LOG_FILE" 2>&1
+        log_ok "Sing-box установлен"
+    else
+        log_fail "Не удалось установить Sing-box"
+        return 1
+    fi
+
+    log_step "Генерация ключей и портов для Sing-box..."
+    SB_VLESS_PORT=$(find_free_port tcp 50100 55000)
+    SB_TROJAN_PORT=$(find_free_port tcp 55100 60000)
+    SB_SS_PORT=$(find_free_port tcp 60100 65000)
+
+    # Reality Keys
+    local keys=$(/usr/local/bin/sing-box reality-keypair)
+    SB_REALITY_PRIV_KEY=$(echo "$keys" | grep "PrivateKey:" | awk '{print $2}')
+    SB_REALITY_PUB_KEY=$(echo "$keys" | grep "PublicKey:" | awk '{print $2}')
+    SB_REALITY_SHORT_ID=$(openssl rand -hex 8)
+    
+    local sni_candidates=(
+        "dl.google.com"
+        "www.microsoft.com"
+        "apps.apple.com"
+        "d1.awsstatic.com"
+    )
+    local sni_index=$(( RANDOM % ${#sni_candidates[@]} ))
+    SB_REALITY_SNI="${sni_candidates[$sni_index]}"
+
+    mkdir -p "/etc/sing-box"
+
+    cat > "$STATE_DIR/singbox.env" <<EOF
+SB_VLESS_PORT=${SB_VLESS_PORT}
+SB_TROJAN_PORT=${SB_TROJAN_PORT}
+SB_SS_PORT=${SB_SS_PORT}
+SB_REALITY_PRIV_KEY=${SB_REALITY_PRIV_KEY}
+SB_REALITY_PUB_KEY=${SB_REALITY_PUB_KEY}
+SB_REALITY_SHORT_ID=${SB_REALITY_SHORT_ID}
+SB_REALITY_SNI=${SB_REALITY_SNI}
+EOF
+    chmod 600 "$STATE_DIR/singbox.env"
+
+    # UFW ports
+    ufw allow "$SB_VLESS_PORT"/tcp comment "Sing-box VLESS TCP" >> "$LOG_FILE" 2>&1
+    ufw allow "$SB_TROJAN_PORT"/tcp comment "Sing-box Trojan TCP" >> "$LOG_FILE" 2>&1
+    ufw allow "$SB_SS_PORT"/tcp comment "Sing-box Shadowsocks TCP" >> "$LOG_FILE" 2>&1
+    ufw allow "$SB_SS_PORT"/udp comment "Sing-box Shadowsocks UDP" >> "$LOG_FILE" 2>&1
+
+    # Systemd service
+    cat > /etc/systemd/system/sing-box.service <<EOF
+[Unit]
+Description=Sing-box Service
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/etc/sing-box
+ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+Restart=always
+RestartSec=3s
+LimitNPROC=500
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1
+    systemctl enable sing-box >> "$LOG_FILE" 2>&1
+
+    # Create dummy initial empty config so service can start initially
+    cat > /etc/sing-box/config.json <<EOF
+{
+  "inbounds": [],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+    systemctl start sing-box >> "$LOG_FILE" 2>&1
+
+    mark_done "install_singbox"
+    step_finish
+}
+
+# =============================================================================
 # 7. setup_warp
 # =============================================================================
 setup_warp() {
@@ -1154,20 +1266,38 @@ print_summary() {
     local warp_status="не активен"
     if wg show wgcf-warp &>/dev/null 2>&1; then warp_status="активен"; fi
 
-    # Генерация Base64-подписки
-    local sub_content=""
-    [[ -n "${H2_URI:-}" ]]    && sub_content+="${H2_URI}"$'\n'
-    [[ -n "${MIERU_URI:-}" ]] && sub_content+="${MIERU_URI}"$'\n'
-    local sub_base64
-    sub_base64=$(echo -n "$sub_content" | base64 | tr -d '\r\n')
+    # Создание дефолтного пользователя через CLI панели (для синхронизации с базой данных)
+    local default_user_pass=""
+    local default_user_sub=""
+    
+    # Ждем 1 секунду для инициализации БД панели
+    sleep 1
 
-    # Сохраняем подписки на диске
-    echo -n "$sub_base64" > /root/vpn-setup-sub.txt
-    chmod 600 /root/vpn-setup-sub.txt
-
-    mkdir -p /var/www/html
-    echo -n "$sub_base64" > "/var/www/html/${SUB_PATH}"
-    chmod 644 "/var/www/html/${SUB_PATH}"
+    if ! /opt/vpn-panel/vpn-panel list | grep -q "default_user"; then
+        log_step "Создание дефолтного пользователя VPN в базе данных..."
+        local user_out
+        user_out=$(/opt/vpn-panel/vpn-panel add default_user --route-warp 1 --protocol all)
+        default_user_pass=$(echo "$user_out" | grep "Пароль:" | awk '{print $2}')
+        default_user_sub=$(echo "$user_out" | grep "Подписка:" | awk '{print $2}')
+        
+        # Сохраняем в файл состояния
+        echo "DEFAULT_USER_PASS=\"${default_user_pass}\"" >> "$STATE_DIR/subscription_path"
+        echo "DEFAULT_USER_SUB=\"${default_user_sub}\"" >> "$STATE_DIR/subscription_path"
+    else
+        # Читаем пароль и токен подписки из env
+        if [[ -f "$STATE_DIR/subscription_path" ]] && grep -q "DEFAULT_USER_SUB" "$STATE_DIR/subscription_path"; then
+            source "$STATE_DIR/subscription_path"
+            default_user_pass="${DEFAULT_USER_PASS:-}"
+            default_user_sub="${DEFAULT_USER_SUB:-}"
+        else
+            # Если в файле нет, попробуем вытащить через sqlite3
+            apt-get install -y sqlite3 >> "$LOG_FILE" 2>&1 || true
+            default_user_pass=$(sqlite3 /etc/vpn-panel/panel.db "SELECT password FROM users WHERE username='default_user';" 2>/dev/null || echo "")
+            default_user_sub=$(sqlite3 /etc/vpn-panel/panel.db "SELECT sub_path FROM users WHERE username='default_user';" 2>/dev/null || echo "")
+            echo "DEFAULT_USER_PASS=\"${default_user_pass}\"" >> "$STATE_DIR/subscription_path"
+            echo "DEFAULT_USER_SUB=\"${default_user_sub}\"" >> "$STATE_DIR/subscription_path"
+        fi
+    fi
 
     # singbox.json
     cat > /var/www/html/singbox.json <<JSON
@@ -1388,14 +1518,8 @@ EOF
     printf "  %s\n" "──────────────────────────────────────────────────────────"
     printf "\n  ${BOLD}Ссылки для подключения:${NC}\n\n"
 
-    printf "  ${CYAN}Karing / Sing-box:${NC}\n"
-    printf "  → http://%s:8080/singbox.json\n\n" "$server_ip"
-
-    printf "  ${CYAN}Clash Verge / Mihomo:${NC}\n"
-    printf "  → http://%s:8080/%s\n\n" "$server_ip" "$CLASH_PATH"
-
-    printf "  ${CYAN}V2Ray (единая подписка Base64):${NC}\n"
-    printf "  → http://%s:8080/%s\n\n" "$server_ip" "$SUB_PATH"
+    printf "  ${CYAN}Единая ссылка подписки (автоопределение Clash, Sing-box, Karing, Shadowrocket):${NC}\n"
+    printf "  → http://%s:8080/%s\n\n" "$server_ip" "${default_user_sub}"
 
     printf "  %s\n" "──────────────────────────────────────────────────────────"
     printf "  Полные креденциалы: ${BOLD}%s${NC}\n" "$INFO_FILE"
@@ -1497,6 +1621,13 @@ do_status() {
         printf "  ${RED}●${NC}  Hysteria2             ${RED}остановлен${NC}\n"
     fi
 
+    # Sing-box
+    if systemctl is-active --quiet sing-box 2>/dev/null; then
+        printf "  ${GREEN}●${NC}  Sing-box (VLESS/...)  ${GREEN}работает${NC}\n"
+    else
+        printf "  ${RED}●${NC}  Sing-box (VLESS/...)  ${RED}остановлен${NC}\n"
+    fi
+
     # WARP
     if wg show wgcf-warp &>/dev/null 2>&1; then
         printf "  ${GREEN}●${NC}  Cloudflare WARP       ${GREEN}активен${NC}\n"
@@ -1531,6 +1662,12 @@ do_status() {
     if [[ -f "$STATE_DIR/hysteria2.env" ]]; then
         source "$STATE_DIR/hysteria2.env"
         printf "  ${CYAN}Hysteria2:${NC} порт ${H2_PORT:-?} (UDP)\n"
+    fi
+    if [[ -f "$STATE_DIR/singbox.env" ]]; then
+        source "$STATE_DIR/singbox.env"
+        printf "  ${CYAN}Sing-box VLESS:${NC} порт ${SB_VLESS_PORT:-?} (TCP)\n"
+        printf "  ${CYAN}Sing-box Trojan:${NC} порт ${SB_TROJAN_PORT:-?} (TCP)\n"
+        printf "  ${CYAN}Sing-box Shadowsocks:${NC} порт ${SB_SS_PORT:-?} (TCP/UDP)\n"
     fi
     if [[ -f "$STATE_DIR/subscription_path" ]]; then
         source "$STATE_DIR/subscription_path"
@@ -1937,6 +2074,7 @@ main() {
             tune_network
             install_mieru
             install_hysteria2
+            install_singbox
             setup_warp
             setup_subscription_server
             setup_fail2ban
@@ -1964,6 +2102,7 @@ main() {
                 tune_network
                 install_mieru
                 install_hysteria2
+                install_singbox
                 setup_warp
                 setup_subscription_server
                 setup_fail2ban

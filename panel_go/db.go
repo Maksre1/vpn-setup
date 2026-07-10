@@ -55,6 +55,9 @@ type User struct {
 	SpeedFmt   string `json:"_speed_fmt"`
 	H2Uri      string `json:"h2_uri"`
 	MieruUri   string `json:"mieru_uri"`
+	VlessUri   string `json:"vless_uri"`
+	TrojanUri  string `json:"trojan_uri"`
+	SsUri      string `json:"ss_uri"`
 	Pct        int    `json:"pct"`
 }
 
@@ -546,7 +549,8 @@ func updateHysteriaUsers() {
     type: direct
     bind: 172.16.0.2
 
-acl: /etc/hysteria/acl.txt
+acl:
+  file: /etc/hysteria/acl.txt
 `)
 
 	yamlBuilder.WriteString(fmt.Sprintf(`obfs:
@@ -572,6 +576,7 @@ stats:
 		log.Printf("Error writing Hysteria2 config: %v", err)
 		return
 	}
+	_ = exec.Command("chown", "hysteria:hysteria", configPath).Run()
 
 	// Generate and write ACL file
 	aclBuilder := strings.Builder{}
@@ -585,12 +590,14 @@ stats:
 	aclBuilder.WriteString("direct all\n")
 
 	aclPath := "/etc/hysteria/acl.txt"
-	if err := os.WriteFile(aclPath, []byte(aclBuilder.String()), 0600); err != nil {
+	if err := os.WriteFile(aclPath, []byte(aclBuilder.String()), 0644); err != nil {
 		log.Printf("Error writing Hysteria2 ACL: %v", err)
 		return
 	}
+	_ = exec.Command("chown", "hysteria:hysteria", aclPath).Run()
 
 	_ = exec.Command("systemctl", "restart", "hysteria-server").Run()
+	updateSingboxUsers()
 }
 
 func syncAllUsersToConfigs() {
@@ -620,4 +627,190 @@ func getOptString(m map[string]string, key, dflt string) string {
 		return val
 	}
 	return dflt
+}
+
+type SBUser struct {
+	Name     string `json:"name,omitempty"`
+	UUID     string `json:"uuid,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
+type SBRealityHandshake struct {
+	Server     string `json:"server"`
+	ServerPort int    `json:"server_port"`
+}
+
+type SBReality struct {
+	Enabled    bool               `json:"enabled"`
+	Handshake  SBRealityHandshake `json:"handshake"`
+	PrivateKey string             `json:"private_key"`
+	ShortId    []string           `json:"short_id"`
+}
+
+type SBTLS struct {
+	Enabled    bool       `json:"enabled"`
+	ServerName string     `json:"server_name,omitempty"`
+	Reality    *SBReality `json:"reality,omitempty"`
+	CertPath   string     `json:"cert_path,omitempty"`
+	KeyPath    string     `json:"key_path,omitempty"`
+}
+
+type SBInbound struct {
+	Type       string   `json:"type"`
+	Tag        string   `json:"tag"`
+	Listen     string   `json:"listen"`
+	ListenPort int      `json:"listen_port"`
+	Method     string   `json:"method,omitempty"`
+	Users      []SBUser `json:"users,omitempty"`
+	TLS        *SBTLS   `json:"tls,omitempty"`
+}
+
+type SBOutbound struct {
+	Type         string `json:"type"`
+	Tag          string `json:"tag"`
+	LocalAddress string `json:"local_address,omitempty"`
+}
+
+type SBRule struct {
+	User     []string `json:"user,omitempty"`
+	Outbound string   `json:"outbound"`
+}
+
+type SBRoute struct {
+	Rules []SBRule `json:"rules"`
+	Final string   `json:"final"`
+}
+
+type SBConfig struct {
+	Inbounds  []SBInbound  `json:"inbounds"`
+	Outbounds []SBOutbound `json:"outbounds"`
+	Route     SBRoute      `json:"route"`
+}
+
+func updateSingboxUsers() {
+	sb := getSingboxConfig()
+	vlessPortStr := sb["SB_VLESS_PORT"]
+	if vlessPortStr == "" {
+		return
+	}
+	vlessPort, _ := strconv.Atoi(vlessPortStr)
+	trojanPort, _ := strconv.Atoi(sb["SB_TROJAN_PORT"])
+	ssPort, _ := strconv.Atoi(sb["SB_SS_PORT"])
+
+	rows, err := db.Query("SELECT username, password, protocol, route_warp FROM users WHERE is_active=1")
+	if err != nil {
+		log.Printf("Error querying users for Sing-box: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var vlessUsers []SBUser
+	var trojanUsers []SBUser
+	var ssUsers []SBUser
+	var warpUsernames []string
+
+	for rows.Next() {
+		var name, pass, proto string
+		var warp int
+		if err := rows.Scan(&name, &pass, &proto, &warp); err == nil {
+			if warp == 1 {
+				warpUsernames = append(warpUsernames, name)
+			}
+			if proto == "all" || proto == "vless" {
+				vlessUsers = append(vlessUsers, SBUser{Name: name, UUID: getUUID(pass)})
+			}
+			if proto == "all" || proto == "trojan" {
+				trojanUsers = append(trojanUsers, SBUser{Name: name, Password: pass})
+			}
+			if proto == "all" || proto == "shadowsocks" {
+				ssUsers = append(ssUsers, SBUser{Name: name, Password: pass})
+			}
+		}
+	}
+
+	var inbounds []SBInbound
+
+	// VLESS Reality Inbound
+	if vlessPort > 0 {
+		inbounds = append(inbounds, SBInbound{
+			Type:       "vless",
+			Tag:        "vless-in",
+			Listen:     "::",
+			ListenPort: vlessPort,
+			Users:      vlessUsers,
+			TLS: &SBTLS{
+				Enabled:    true,
+				ServerName: sb["SB_REALITY_SNI"],
+				Reality: &SBReality{
+					Enabled: true,
+					Handshake: SBRealityHandshake{
+						Server:     sb["SB_REALITY_SNI"],
+						ServerPort: 443,
+					},
+					PrivateKey: sb["SB_REALITY_PRIV_KEY"],
+					ShortId:    []string{sb["SB_REALITY_SHORT_ID"]},
+				},
+			},
+		})
+	}
+
+	// Trojan Inbound (uses self-signed cert from hysteria)
+	if trojanPort > 0 {
+		inbounds = append(inbounds, SBInbound{
+			Type:       "trojan",
+			Tag:        "trojan-in",
+			Listen:     "::",
+			ListenPort: trojanPort,
+			Users:      trojanUsers,
+			TLS: &SBTLS{
+				Enabled:  true,
+				CertPath: "/etc/hysteria/certs/server.crt",
+				KeyPath:  "/etc/hysteria/certs/server.key",
+			},
+		})
+	}
+
+	// Shadowsocks Inbound
+	if ssPort > 0 {
+		inbounds = append(inbounds, SBInbound{
+			Type:       "shadowsocks",
+			Tag:        "shadowsocks-in",
+			Listen:     "::",
+			ListenPort: ssPort,
+			Method:     "aes-256-gcm",
+			Users:      ssUsers,
+		})
+	}
+
+	outbounds := []SBOutbound{
+		{Type: "direct", Tag: "direct-out"},
+		{Type: "direct", Tag: "warp-out", LocalAddress: "172.16.0.2"},
+	}
+
+	var rules []SBRule
+	if len(warpUsernames) > 0 {
+		rules = append(rules, SBRule{
+			User:     warpUsernames,
+			Outbound: "warp-out",
+		})
+	}
+
+	cfg := SBConfig{
+		Inbounds:  inbounds,
+		Outbounds: outbounds,
+		Route: SBRoute{
+			Rules: rules,
+			Final: "direct-out",
+		},
+	}
+
+	configPath := "/etc/sing-box/config.json"
+	_ = os.MkdirAll(filepath.Dir(configPath), 0755)
+	
+	bytes, err := json.MarshalIndent(cfg, "", "  ")
+	if err == nil {
+		_ = os.WriteFile(configPath, bytes, 0600)
+	}
+
+	_ = exec.Command("systemctl", "restart", "sing-box").Run()
 }

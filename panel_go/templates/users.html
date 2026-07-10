@@ -69,7 +69,7 @@
                         {{ end }}
                     </td>
                     <td style="white-space:nowrap;">
-                        <button class="btn btn-sm btn-accent btn-icon" onclick="showInfoModal('{{ .Username }}', '{{ .SubPath }}', '{{ .H2Uri }}', '{{ .MieruUri }}')" title="Подключение"><i class="bi bi-qr-code"></i></button>
+                        <button class="btn btn-sm btn-accent btn-icon" onclick="showInfoModal('{{ .Username }}', '{{ .SubPath }}', '{{ .H2Uri }}', '{{ .MieruUri }}', '{{ .VlessUri }}', '{{ .TrojanUri }}', '{{ .SsUri }}')" title="Подключение"><i class="bi bi-qr-code"></i></button>
                         <button class="btn btn-sm btn-icon" onclick="openEditUserModal({{ .ID }}, '{{ .Username }}', '{{ .ExpireDate }}', {{ .TrafficLimitGB }}, {{ .SpeedLimitMbps }}, '{{ .Protocol }}', {{ .IsActive }}, {{ .UsedTrafficBytes }}, {{ .RouteWarp }})" title="Редактировать"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-icon btn-danger" onclick="deleteUser({{ .ID }}, '{{ .Username }}')" title="Удалить"><i class="bi bi-trash3"></i></button>
                     </td>
@@ -92,9 +92,12 @@
         </div>
         <div class="modal-body" style="padding:20px;">
             <!-- Tabs -->
-            <div style="display:flex; gap:8px; border-bottom:1px solid var(--border); margin-bottom:16px; padding-bottom:8px;">
+            <div style="display:flex; gap:6px; border-bottom:1px solid var(--border); margin-bottom:16px; padding-bottom:8px; overflow-x:auto;">
                 <button class="btn tab-btn active" id="tabH2Btn" onclick="switchTab('H2')">Hysteria2</button>
                 <button class="btn tab-btn" id="tabMieruBtn" onclick="switchTab('Mieru')">Mieru</button>
+                <button class="btn tab-btn" id="tabVlessBtn" onclick="switchTab('Vless')">VLESS</button>
+                <button class="btn tab-btn" id="tabTrojanBtn" onclick="switchTab('Trojan')">Trojan</button>
+                <button class="btn tab-btn" id="tabSsBtn" onclick="switchTab('Ss')">Shadowsocks</button>
                 <button class="btn tab-btn" id="tabSubBtn" onclick="switchTab('Sub')">Подписка</button>
             </div>
             
@@ -113,6 +116,33 @@
                 <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
                     <input type="text" id="uriMieru" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
                     <button class="btn btn-accent btn-icon" onclick="copyField('uriMieru')" title="Копировать"><i class="bi bi-copy"></i></button>
+                </div>
+            </div>
+
+            <!-- Tab Content Vless -->
+            <div id="tabContentVless" class="tab-content" style="display:none; text-align:center;">
+                <div style="margin:16px auto; width:170px; height:170px; background:#fff; padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrVless"></div>
+                <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
+                    <input type="text" id="uriVless" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
+                    <button class="btn btn-accent btn-icon" onclick="copyField('uriVless')" title="Копировать"><i class="bi bi-copy"></i></button>
+                </div>
+            </div>
+
+            <!-- Tab Content Trojan -->
+            <div id="tabContentTrojan" class="tab-content" style="display:none; text-align:center;">
+                <div style="margin:16px auto; width:170px; height:170px; background:#fff; padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrTrojan"></div>
+                <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
+                    <input type="text" id="uriTrojan" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
+                    <button class="btn btn-accent btn-icon" onclick="copyField('uriTrojan')" title="Копировать"><i class="bi bi-copy"></i></button>
+                </div>
+            </div>
+
+            <!-- Tab Content Shadowsocks -->
+            <div id="tabContentSs" class="tab-content" style="display:none; text-align:center;">
+                <div style="margin:16px auto; width:170px; height:170px; background:#fff; padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrSs"></div>
+                <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
+                    <input type="text" id="uriSs" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
+                    <button class="btn btn-accent btn-icon" onclick="copyField('uriSs')" title="Копировать"><i class="bi bi-copy"></i></button>
                 </div>
             </div>
             
@@ -181,9 +211,12 @@
                 <div class="form-group">
                     <label>Протокол</label>
                     <select name="protocol" id="formProtocol" class="form-control">
-                        <option value="all">Все (Hysteria2 + Mieru)</option>
+                        <option value="all">Все протоколы (Hysteria2, Mieru, VLESS, Trojan, SS)</option>
                         <option value="hysteria2">Hysteria2</option>
                         <option value="mieru">Mieru</option>
+                        <option value="vless">VLESS Reality</option>
+                        <option value="trojan">Trojan</option>
+                        <option value="shadowsocks">Shadowsocks</option>
                     </select>
                 </div>
 
@@ -239,11 +272,14 @@
 
 {{ define "scripts" }}
 <script>
-function showInfoModal(username, subPath, h2Uri, mieruUri) {
+function showInfoModal(username, subPath, h2Uri, mieruUri, vlessUri, trojanUri, ssUri) {
     document.getElementById('modalTitle').textContent = 'Подключение — ' + username;
     
     document.getElementById('uriH2').value = h2Uri || 'Не настроено (протокол отключен)';
     document.getElementById('uriMieru').value = mieruUri || 'Не настроено (протокол отключен)';
+    document.getElementById('uriVless').value = vlessUri || 'Не настроено (протокол отключен)';
+    document.getElementById('uriTrojan').value = trojanUri || 'Не настроено (протокол отключен)';
+    document.getElementById('uriSs').value = ssUri || 'Не настроено (протокол отключен)';
     
     const serverIp = "{{ .ServerIP }}";
     const subUrlVal = 'http://' + serverIp + ':8080/' + subPath;
@@ -251,9 +287,15 @@ function showInfoModal(username, subPath, h2Uri, mieruUri) {
     
     const qrH2Container = document.getElementById('qrH2');
     const qrMieruContainer = document.getElementById('qrMieru');
+    const qrVlessContainer = document.getElementById('qrVless');
+    const qrTrojanContainer = document.getElementById('qrTrojan');
+    const qrSsContainer = document.getElementById('qrSs');
     
     qrH2Container.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Генерация...</span>';
     qrMieruContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Генерация...</span>';
+    qrVlessContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Генерация...</span>';
+    qrTrojanContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Генерация...</span>';
+    qrSsContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Генерация...</span>';
     
     if (h2Uri) {
         fetch('/api/qr?text=' + encodeURIComponent(h2Uri))
@@ -269,6 +311,30 @@ function showInfoModal(username, subPath, h2Uri, mieruUri) {
             .then(svg => { qrMieruContainer.innerHTML = svg; });
     } else {
         qrMieruContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Mieru отключен</span>';
+    }
+
+    if (vlessUri) {
+        fetch('/api/qr?text=' + encodeURIComponent(vlessUri))
+            .then(r => r.text())
+            .then(svg => { qrVlessContainer.innerHTML = svg; });
+    } else {
+        qrVlessContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">VLESS отключен</span>';
+    }
+
+    if (trojanUri) {
+        fetch('/api/qr?text=' + encodeURIComponent(trojanUri))
+            .then(r => r.text())
+            .then(svg => { qrTrojanContainer.innerHTML = svg; });
+    } else {
+        qrTrojanContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Trojan отключен</span>';
+    }
+
+    if (ssUri) {
+        fetch('/api/qr?text=' + encodeURIComponent(ssUri))
+            .then(r => r.text())
+            .then(svg => { qrSsContainer.innerHTML = svg; });
+    } else {
+        qrSsContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Shadowsocks отключен</span>';
     }
     
     document.getElementById('infoModal').classList.add('active');
@@ -414,7 +480,7 @@ function quickCreateUser() {
             loadPage('/users');
             // Show Connection credentials immediately
             setTimeout(() => {
-                showInfoModal(data.username, data.sub_path, data.h2_uri, data.mieru_uri);
+                showInfoModal(data.username, data.sub_path, data.h2_uri, data.mieru_uri, data.vless_uri, data.trojan_uri, data.ss_uri);
             }, 300);
         } else {
             showToast(data.msg || 'Ошибка создания', 'danger');

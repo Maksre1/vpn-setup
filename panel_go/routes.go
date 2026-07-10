@@ -354,6 +354,7 @@ func setupRoutes(r *gin.Engine) {
 		serverIP := getServerIP()
 		h2 := getHysteria2Config()
 		mieru := getMieruConfig()
+		sb := getSingboxConfig()
 
 		for rows.Next() {
 			var u User
@@ -370,6 +371,15 @@ func setupRoutes(r *gin.Engine) {
 				}
 				if u.Protocol == "all" || u.Protocol == "mieru" {
 					u.MieruUri = getMieruUri(mieru, serverIP, u.Username, u.Password)
+				}
+				if u.Protocol == "all" || u.Protocol == "vless" {
+					u.VlessUri = getVlessUri(sb, serverIP, u.Password)
+				}
+				if u.Protocol == "all" || u.Protocol == "trojan" {
+					u.TrojanUri = getTrojanUri(sb, serverIP, u.Password)
+				}
+				if u.Protocol == "all" || u.Protocol == "shadowsocks" {
+					u.SsUri = getShadowsocksUri(sb, serverIP, u.Password)
 				}
 
 				// Calculate progress bar percentage
@@ -479,17 +489,24 @@ func setupRoutes(r *gin.Engine) {
 
 		h2 := getHysteria2Config()
 		mieru := getMieruConfig()
+		sb := getSingboxConfig()
 		serverIP := getServerIP()
 		h2Uri := getHysteria2Uri(h2, serverIP, username, password)
 		mieruUri := getMieruUri(mieru, serverIP, username, password)
+		vlessUri := getVlessUri(sb, serverIP, password)
+		trojanUri := getTrojanUri(sb, serverIP, password)
+		ssUri := getShadowsocksUri(sb, serverIP, password)
 
 		c.JSON(http.StatusOK, gin.H{
-			"ok":        true,
-			"msg":       fmt.Sprintf("Быстрое создание успешно. Пользователь: %s", username),
-			"username":  username,
-			"sub_path":  subPath,
-			"h2_uri":    h2Uri,
-			"mieru_uri": mieruUri,
+			"ok":         true,
+			"msg":        fmt.Sprintf("Быстрое создание успешно. Пользователь: %s", username),
+			"username":   username,
+			"sub_path":   subPath,
+			"h2_uri":     h2Uri,
+			"mieru_uri":  mieruUri,
+			"vless_uri":  vlessUri,
+			"trojan_uri": trojanUri,
+			"ss_uri":     ssUri,
 		})
 	})
 

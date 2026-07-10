@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -528,4 +529,51 @@ func getCPULoadPct() int {
 		}
 	}
 	return 5
+}
+
+func getSingboxConfig() map[string]string {
+	return loadEnv("/etc/vpn-setup-state/singbox.env")
+}
+
+func getUUID(input string) string {
+	hasher := md5.New()
+	hasher.Write([]byte(input))
+	hash := hasher.Sum(nil)
+	return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		hash[0], hash[1], hash[2], hash[3],
+		hash[4], hash[5],
+		hash[6], hash[7],
+		hash[8], hash[9],
+		hash[10], hash[11], hash[12], hash[13], hash[14], hash[15])
+}
+
+func getVlessUri(config map[string]string, serverIP, password string) string {
+	port := config["SB_VLESS_PORT"]
+	pubKey := config["SB_REALITY_PUB_KEY"]
+	shortId := config["SB_REALITY_SHORT_ID"]
+	sni := config["SB_REALITY_SNI"]
+	if port == "" || pubKey == "" {
+		return ""
+	}
+	uuid := getUUID(password)
+	return fmt.Sprintf("vless://%s@%s:%s?security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#VLESS-Reality",
+		uuid, serverIP, port, sni, pubKey, shortId)
+}
+
+func getTrojanUri(config map[string]string, serverIP, password string) string {
+	port := config["SB_TROJAN_PORT"]
+	if port == "" {
+		return ""
+	}
+	return fmt.Sprintf("trojan://%s@%s:%s?security=tls&sni=%s&allowInsecure=1#Trojan-Proxy",
+		password, serverIP, port, serverIP)
+}
+
+func getShadowsocksUri(config map[string]string, serverIP, password string) string {
+	port := config["SB_SS_PORT"]
+	if port == "" {
+		return ""
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte("aes-256-gcm:" + password))
+	return fmt.Sprintf("ss://%s@%s:%s#Shadowsocks-Proxy", auth, serverIP, port)
 }
