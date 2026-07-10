@@ -632,16 +632,11 @@ install_hysteria2() {
 
     mkdir -p "$H2_CERT_DIR"
     local cn_candidates=(
-        "mail.google.com" "cdn.cloudflare.com" "api.github.com"
-        "static.twitchcdn.net" "images.unsplash.com" "assets.adobe.com"
-        "fonts.googleapis.com" "cdn.jsdelivr.net" "polyfill.io"
-        "ajax.cloudflare.com" "www.microsoft.com" "dl.google.com"
-        "redirector.googlevideo.com" "rr5---sn-ab5sznly.googlevideo.com"
-        "manifest.googlevideo.com" "play.googleapis.com"
-        "graph.facebook.com" "scontent.xx.fbcdn.net"
-        "api.twitter.com" "pbs.twimg.com"
-        "store.steampowered.com" "cdn.akamai.steamstatic.com"
-        "static.cdnirk.ru" "cdn.jsdelivr.net"
+        "cdn.cloudflare.com"
+        "dl.google.com"
+        "www.microsoft.com"
+        "apps.apple.com"
+        "d1.awsstatic.com"
     )
     local cn_index=$(( RANDOM % ${#cn_candidates[@]} ))
     H2_CERT_CN="${cn_candidates[$cn_index]}"
