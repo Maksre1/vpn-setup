@@ -799,7 +799,7 @@ install_singbox() {
     SB_SS_PORT=$(find_free_port tcp 60100 65000)
 
     # Reality Keys
-    local keys=$(/usr/local/bin/sing-box reality-keypair)
+    local keys=$(/usr/local/bin/sing-box generate reality-keypair)
     SB_REALITY_PRIV_KEY=$(echo "$keys" | grep "PrivateKey:" | awk '{print $2}')
     SB_REALITY_PUB_KEY=$(echo "$keys" | grep "PublicKey:" | awk '{print $2}')
     SB_REALITY_SHORT_ID=$(openssl rand -hex 8)
