@@ -403,11 +403,9 @@ select.form-control {
     background-repeat: no-repeat !important;
     background-position: right 12px center !important;
     background-size: 12px !important;
-    padding-right: 36px !important;
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
-    height: 35px !important;
-    line-height: 35px !important;
+    padding: 8px 36px 8px 12px !important;
+    height: auto !important;
+    line-height: normal !important;
 }
 select.form-control option {
     background-color: var(--bg-panel) !important;
