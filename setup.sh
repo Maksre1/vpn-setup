@@ -1174,11 +1174,48 @@ JSON
 mixed-port: 7892
 allow-lan: false
 mode: rule
-log-level: info
+log-level: warning
 ipv6: false
+find-process-mode: strict
+
+# DNS
+dns:
+  enable: true
+  listen: 0.0.0.0:1053
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+    - "*.localhost"
+    - "+.msftconnecttest.com"
+    - "+.msftncsi.com"
+    - "*.srv"
+    - "*.msedge.net"
+    - "stun.*.*"
+    - "stun.*.*.*"
+    - "+.stun.*.*"
+    - "+.stun.*.*.*"
+    - "+.stun.*.*.*.*"
+    - "+.stun.*.*.*.*.*"
+  default-nameserver:
+    - 1.1.1.1
+    - 8.8.8.8
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+  fallback:
+    - https://1.1.1.1/dns-query
+    - https://dns.google/dns-query
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+    ipcidr:
+      - 240.0.0.0/4
 
 proxies:
-  - name: Hysteria2-Proxy
+  - name: Hysteria2
     type: hysteria2
     server: ${server_ip}
     port: ${H2_PORT:-443}
@@ -1188,25 +1225,95 @@ proxies:
     sni: ${H2_CERT_CN:-mail.example.com}
     fingerprint: ${H2_CERT_PIN_HEX:-}
     skip-cert-verify: false
+    up: "50 Mbps"
+    down: "200 Mbps"
 
-  - name: Mieru-Proxy
+  - name: Mieru
     type: mieru
     server: ${server_ip}
     port: ${MIERU_PORT:-443}
     username: ${MIERU_USER:-}
     password: ${MIERU_PASS:-}
-    transport: TCP
+    transport: UDP
 
 proxy-groups:
-  - name: PROXY
+  - name: Proxy
     type: select
     proxies:
-      - Hysteria2-Proxy
-      - Mieru-Proxy
+      - Auto
+      - Hysteria2
+      - Mieru
       - DIRECT
 
+  - name: Auto
+    type: url-test
+    proxies:
+      - Hysteria2
+      - Mieru
+    url: http://cp.cloudflare.com/generate_204
+    interval: 300
+    tolerance: 50
+
 rules:
-  - MATCH, PROXY
+  # Локальные и служебные
+  - GEOIP,private,DIRECT,no-resolve
+  - DOMAIN-SUFFIX,local,DIRECT
+  - DOMAIN-SUFFIX,localhost,DIRECT
+  - DOMAIN-KEYWORD,localhost,DIRECT
+
+  # Россия, Беларусь, Казахстан — напрямую
+  - GEOIP,RU,DIRECT
+  - GEOIP,BY,DIRECT
+  - GEOIP,KZ,DIRECT
+
+  # Популярные российские сервисы — напрямую
+  - DOMAIN-SUFFIX,yandex.ru,DIRECT
+  - DOMAIN-SUFFIX,yandex.com,DIRECT
+  - DOMAIN-SUFFIX,ya.ru,DIRECT
+  - DOMAIN-SUFFIX,yandex.net,DIRECT
+  - DOMAIN-SUFFIX,yandex.ua,DIRECT
+  - DOMAIN-SUFFIX,yandex.by,DIRECT
+  - DOMAIN-SUFFIX,yandex.kz,DIRECT
+  - DOMAIN-SUFFIX,yandex.cloud,DIRECT
+  - DOMAIN-SUFFIX,yastatic.net,DIRECT
+  - DOMAIN-SUFFIX,yacd.org,DIRECT
+  - DOMAIN-SUFFIX,mail.ru,DIRECT
+  - DOMAIN-SUFFIX,mailagent.ru,DIRECT
+  - DOMAIN-SUFFIX,vk.com,DIRECT
+  - DOMAIN-SUFFIX,vk.ru,DIRECT
+  - DOMAIN-SUFFIX,mc vk.com,DIRECT
+  - DOMAIN-SUFFIX,ok.ru,DIRECT
+  - DOMAIN-SUFFIX,odnoklassniki.ru,DIRECT
+  - DOMAIN-SUFFIX,rt.ru,DIRECT
+  - DOMAIN-SUFFIX,sberbank.ru,DIRECT
+  - DOMAIN-SUFFIX,sber.ru,DIRECT
+  - DOMAIN-SUFFIX,tinkoff.ru,DIRECT
+  - DOMAIN-SUFFIX,tbank.ru,DIRECT
+  - DOMAIN-SUFFIX,gosuslugi.ru,DIRECT
+  - DOMAIN-SUFFIX,gov.ru,DIRECT
+  - DOMAIN-SUFFIX,mos.ru,DIRECT
+  - DOMAIN-SUFFIX,mts.ru,DIRECT
+  - DOMAIN-SUFFIX,beeline.ru,DIRECT
+  - DOMAIN-SUFFIX,megafon.ru,DIRECT
+  - DOMAIN-SUFFIX,tele2.ru,DIRECT
+  - DOMAIN-SUFFIX,rutube.ru,DIRECT
+  - DOMAIN-SUFFIX,kinopoisk.ru,DIRECT
+  - DOMAIN-SUFFIX,dzen.ru,DIRECT
+  - DOMAIN-SUFFIX,auto.ru,DIRECT
+  - DOMAIN-SUFFIX,avito.ru,DIRECT
+  - DOMAIN-SUFFIX,ozon.ru,DIRECT
+  - DOMAIN-SUFFIX,wildberries.ru,DIRECT
+  - DOMAIN-SUFFIX,li.ru,DIRECT
+  - DOMAIN-SUFFIX,song.link,DIRECT
+  - DOMAIN-SUFFIX,sbercloud.ru,DIRECT
+  - DOMAIN-SUFFIX,selectel.ru,DIRECT
+  - DOMAIN-SUFFIX,time1.ru,DIRECT
+  - DOMAIN-SUFFIX,moscowtime.ru,DIRECT
+  - DOMAIN-SUFFIX,gtlingua.ru,DIRECT
+  - DOMAIN-SUFFIX,sportmaster.ru,DIRECT
+
+  # Прокси для всего остального
+  - MATCH,Proxy
 EOF
     chmod 644 /var/www/html/clash.yaml
 
