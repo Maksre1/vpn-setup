@@ -1938,8 +1938,10 @@ setup_panel() {
     PANEL_PORT=$(find_free_port tcp 20000 65000)
 
     # Установка зависимостей
-    pip3 install --break-system-packages flask flask-wtf >> "$LOG_FILE" 2>&1 || \
-    pip3 install flask flask-wtf >> "$LOG_FILE" 2>&1 || true
+    if ! python3 -c "import flask" 2>/dev/null; then
+        pip3 install --break-system-packages flask flask-wtf 2>&1 | tail -3
+        pip3 install flask flask-wtf 2>&1 | tail -3 || true
+    fi
 
     # Копирование файлов панели
     local panel_dir="/opt/vpn-panel"
