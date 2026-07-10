@@ -52,8 +52,8 @@
 </div>
 
 <!-- Modal: Add/Edit Inbound -->
-<div class="modal" id="inboundModal">
-    <div class="modal-content" style="max-width:650px;">
+<div class="modal-overlay" id="inboundModal">
+    <div class="modal" style="max-width:650px;">
         <div class="modal-header" style="padding:20px; border-bottom:1px solid var(--border);">
             <span id="modalInboundTitle">Создать подключение</span>
             <button class="btn btn-sm btn-icon" onclick="closeInboundModal()" style="background:none; border:none; color:var(--text-secondary);"><i class="bi bi-x-lg"></i></button>
@@ -151,7 +151,7 @@
                     </div>
                 </div>
 
-                <!-- Tab: Stream / Transport -->
+                <!-- Tab: Stream Settings -->
                 <div id="tabInbContentStream" class="tab-content-inb" style="display:none; padding:20px;">
                     <div class="form-group">
                         <label>Транспортный протокол</label>
@@ -177,52 +177,31 @@
 
                 <!-- Tab: Security -->
                 <div id="tabInbContentSecurity" class="tab-content-inb" style="display:none; padding:20px;">
-                    <div id="securitySectionVless">
-                        <div class="grid-2">
-                            <div class="form-group">
-                                <label>Безопасность</label>
-                                <select name="security" id="formInbSecurity" class="form-control">
-                                    <option value="reality">Reality</option>
-                                    <option value="tls">TLS</option>
-                                    <option value="none">Нет</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>uTLS Fingerprint</label>
-                                <select name="utls" id="formInbUtls" class="form-control">
-                                    <option value="firefox">firefox (Рекомендуется)</option>
-                                    <option value="chrome">chrome</option>
-                                    <option value="safari">safari</option>
-                                    <option value="edge">edge</option>
-                                </select>
-                            </div>
+                    <div id="protoSectionVless">
+                        <div class="form-group">
+                            <label>Безопасность / Security</label>
+                            <select name="security" id="formInbSecurity" class="form-control">
+                                <option value="reality">Reality (Рекомендуется)</option>
+                                <option value="none">None</option>
+                            </select>
                         </div>
-
-                        <div class="grid-2">
-                            <div class="form-group">
-                                <label>Reality Цель (Dest)</label>
-                                <input type="text" name="reality_dest" id="formInbRealityDest" class="form-control mono" value="apps.apple.com:443" required>
-                            </div>
-                            <div class="form-group">
-                                <label>Reality SNI</label>
-                                <input type="text" name="sni" id="formInbSni" class="form-control mono" value="apps.apple.com" required>
-                            </div>
+                        <div class="form-group">
+                            <label>Эмуляция браузера (uTLS)</label>
+                            <select name="utls" id="formInbUtls" class="form-control">
+                                <option value="chrome">chrome</option>
+                                <option value="firefox">firefox</option>
+                                <option value="safari">safari</option>
+                                <option value="edge">edge</option>
+                            </select>
                         </div>
-
-                        <div class="grid-2">
-                            <div class="form-group">
-                                <label>Short ID (8 байт hex)</label>
-                                <div style="display:flex; gap:8px;">
-                                    <input type="text" name="short_id" id="formInbShortId" class="form-control mono" required maxlength="16">
-                                    <button type="button" class="btn" onclick="generateShortId()" title="Сгенерировать случайный Short ID"><i class="bi bi-arrow-repeat"></i></button>
-                                </div>
-                            </div>
-                            <div class="form-group">
-                                <label>SpiderX</label>
-                                <input type="text" name="spiderx" class="form-control mono" value="/">
-                            </div>
+                        <div class="form-group">
+                            <label>Маскировочный домен (SNI)</label>
+                            <input type="text" name="sni" id="formInbSni" class="form-control mono" required value="d1.awsstatic.com" placeholder="Например: dl.google.com">
                         </div>
-
+                        <div class="form-group">
+                            <label>Reality Dest</label>
+                            <input type="text" name="reality_dest" id="formInbRealityDest" class="form-control mono" required value="d1.awsstatic.com:443" placeholder="Например: dl.google.com:443">
+                        </div>
                         <div class="form-group">
                             <label>Приватный ключ / Private Key</label>
                             <input type="text" name="private_key" id="formInbPrivateKey" class="form-control mono" required>
@@ -282,6 +261,25 @@
                 <button type="submit" class="btn btn-accent">Сохранить</button>
             </div>
         </form>
+    </div>
+</div>
+
+<!-- Modal: Clients Mapping -->
+<div class="modal-overlay" id="clientsModal">
+    <div class="modal" style="max-width:500px;">
+        <div class="modal-header" style="padding:20px; border-bottom:1px solid var(--border);">
+            <span id="modalClientsTitle">Клиенты</span>
+            <button class="btn btn-sm btn-icon" onclick="closeClientsModal()" style="background:none; border:none; color:var(--text-secondary);"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="modal-body" style="padding:20px; max-height:400px; overflow-y:auto;">
+            <div id="clientsListContainer" style="display:flex; flex-direction:column; gap:10px;">
+                <!-- Сюда JS загрузит пользователей с чекбоксами -->
+            </div>
+        </div>
+        <div class="modal-footer" style="padding:16px 20px; border-top:1px solid var(--border); display:flex; justify-content:end; gap:10px;">
+            <button type="button" class="btn" onclick="closeClientsModal()">Отмена</button>
+            <button type="button" class="btn btn-accent" onclick="saveClients()">Сохранить</button>
+        </div>
     </div>
 </div>
 
