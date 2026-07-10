@@ -1990,22 +1990,28 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload >> "$LOG_FILE" 2>&1
-    systemctl enable vpn-panel >> "$LOG_FILE" 2>&1 || true
-    systemctl restart vpn-panel >> "$LOG_FILE" 2>&1 || true
+    systemctl daemon-reload 2>/dev/null
 
-    ufw allow "$PANEL_PORT"/tcp comment "VPN Panel" >> "$LOG_FILE" 2>&1
+    # Генерируем пароль ДО запуска сервиса
+    if [[ ! -f "/etc/vpn-panel/admin_password.txt" ]]; then
+        local admin_pass
+        admin_pass=$(openssl rand -base64 18 | tr -d '/+=' | head -c 16)
+        echo "admin:${admin_pass}" > /etc/vpn-panel/admin_password.txt
+        chmod 600 /etc/vpn-panel/admin_password.txt
+    fi
+
+    systemctl enable vpn-panel 2>/dev/null || true
+    systemctl restart vpn-panel 2>/dev/null || true
+
+    # Открываем порт в файрволе
+    ufw allow "${PANEL_PORT}/tcp" comment "VPN Panel" 2>/dev/null || true
+    ufw reload 2>/dev/null || true
 
     # Сохраняем порт
     echo "PANEL_PORT=\"${PANEL_PORT}\"" > "$STATE_DIR/panel.env"
     chmod 600 "$STATE_DIR/panel.env"
 
-    # Получаем пароль админа
     sleep 2
-    PANEL_ADMIN_PASS=""
-    if [[ -f "/etc/vpn-panel/admin_password.txt" ]]; then
-        PANEL_ADMIN_PASS=$(grep "admin:" /etc/vpn-panel/admin_password.txt | cut -d: -f2)
-    fi
 
     mark_done "setup_panel"
     step_finish
