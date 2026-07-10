@@ -589,9 +589,15 @@ func generateRealityKeyPair() (string, string, error) {
 			l = strings.TrimSpace(l)
 			if strings.HasPrefix(l, "Private key:") {
 				priv = strings.TrimSpace(strings.TrimPrefix(l, "Private key:"))
+			} else if strings.HasPrefix(l, "PrivateKey:") {
+				priv = strings.TrimSpace(strings.TrimPrefix(l, "PrivateKey:"))
 			}
 			if strings.HasPrefix(l, "Public key:") {
 				pub = strings.TrimSpace(strings.TrimPrefix(l, "Public key:"))
+			} else if strings.HasPrefix(l, "Password (PublicKey):") {
+				pub = strings.TrimSpace(strings.TrimPrefix(l, "Password (PublicKey):"))
+			} else if strings.HasPrefix(l, "PublicKey:") {
+				pub = strings.TrimSpace(strings.TrimPrefix(l, "PublicKey:"))
 			}
 		}
 		if priv != "" && pub != "" {
