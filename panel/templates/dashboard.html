@@ -3,31 +3,45 @@
 {% block topbar %}Обзор{% endblock %}
 {% block content %}
 
-<!-- Stats strip -->
-<div class="stats-strip">
-    <div class="stat-cell">
-        <div class="stat-num" style="color:var(--green);">{{ active }}</div>
-        <div class="stat-label">Активных</div>
+<!-- Upper row: Traffic chart (large hero) + Compact specs summary -->
+<div class="grid-2" style="grid-template-columns: 2fr 1fr; margin-bottom:16px;">
+    <!-- Hero Traffic Chart -->
+    <div class="panel" style="display: flex; flex-direction: column;">
+        <div class="panel-header">Трафик за последние 24 часа</div>
+        <div class="panel-body" style="flex-grow: 1; position: relative; min-height: 180px; padding: 12px 16px 8px 8px;">
+            <canvas id="trafficChart"></canvas>
+        </div>
     </div>
-    <div class="stat-cell">
-        <div class="stat-num" style="color:var(--red);">{{ expired }}</div>
-        <div class="stat-label">Истёкших</div>
-    </div>
-    <div class="stat-cell">
-        <div class="stat-num">{{ total }}</div>
-        <div class="stat-label">Всего</div>
-    </div>
-    <div class="stat-cell">
-        <div class="stat-num">{{ specs.ram_mb }}</div>
-        <div class="stat-label">RAM, МБ</div>
-    </div>
-    <div class="stat-cell">
-        <div class="stat-num">{{ specs.cpu_cores }}</div>
-        <div class="stat-label">Ядра</div>
+
+    <!-- Compact Stats Strip -->
+    <div class="panel" style="display: flex; flex-direction: column; justify-content: space-between;">
+        <div class="panel-header">Сводка</div>
+        <div class="panel-body" style="display: flex; flex-direction: column; gap: 8px; flex-grow: 1; justify-content: center; padding: 12px 16px;">
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 6px;">
+                <span style="color:var(--text-secondary); font-size:12px;">Активных пользователей</span>
+                <span class="stat-num" style="color:var(--green); font-size:15px; font-weight:600;">{{ active }}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 6px;">
+                <span style="color:var(--text-secondary); font-size:12px;">Истёкших пользователей</span>
+                <span class="stat-num" style="{% if expired > 0 %}color:var(--red);{% endif %} font-size:15px; font-weight:600;">{{ expired }}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 6px;">
+                <span style="color:var(--text-secondary); font-size:12px;">Всего пользователей</span>
+                <span class="stat-num" style="font-size:15px; font-weight:600;">{{ total }}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 6px;">
+                <span style="color:var(--text-secondary); font-size:12px;">RAM (оперативная память)</span>
+                <span class="stat-num" style="font-size:15px; font-weight:600;">{{ specs.ram_mb }} МБ</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+                <span style="color:var(--text-secondary); font-size:12px;">Ядра процессора</span>
+                <span class="stat-num" style="font-size:15px; font-weight:600;">{{ specs.cpu_cores }}</span>
+            </div>
+        </div>
     </div>
 </div>
 
-<!-- Main grid: services (left, wider) + server info (right) -->
+<!-- Main grid: services (left) + server info (right) -->
 <div class="grid-2" style="grid-template-columns: 1.4fr 1fr; margin-bottom:16px;">
 
     <!-- Services -->
@@ -88,6 +102,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 function refreshServices() {
     fetch('/api/status').then(r=>r.json()).then(()=>location.reload());
@@ -98,5 +113,90 @@ function restartService(name) {
     form.innerHTML='<input type="hidden" name="action" value="restart"><input type="hidden" name="service" value="'+name+'">';
     document.body.appendChild(form); form.submit();
 }
+
+// Chart.js initialization
+document.addEventListener("DOMContentLoaded", function() {
+    const labels = [{% for pt in traffic_history %}'{{ pt.label }}',{% endfor %}];
+    const rxData = [{% for pt in traffic_history %}{{ pt.rx }},{% endfor %}];
+    const txData = [{% for pt in traffic_history %}{{ pt.tx }},{% endfor %}];
+    
+    const ctx = document.getElementById('trafficChart').getContext('2d');
+    const style = getComputedStyle(document.body);
+    const accentColor = style.getPropertyValue('--accent').trim() || '#c2724f';
+    const greenColor = style.getPropertyValue('--green').trim() || '#22c55e';
+    const borderColor = style.getPropertyValue('--border').trim() || '#27272a';
+    const textMuted = style.getPropertyValue('--text-muted').trim() || '#71717a';
+
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Вход (RX), МБ',
+                    data: rxData,
+                    borderColor: greenColor,
+                    backgroundColor: 'rgba(34,197,94,0.03)',
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    fill: true,
+                    tension: 0.25
+                },
+                {
+                    label: 'Исход (TX), МБ',
+                    data: txData,
+                    borderColor: accentColor,
+                    backgroundColor: 'rgba(194,114,79,0.03)',
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    fill: true,
+                    tension: 0.25
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                    align: 'end',
+                    labels: {
+                        boxWidth: 10,
+                        boxHeight: 10,
+                        font: { size: 11, family: 'var(--sans)' },
+                        color: textMuted
+                    }
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false,
+                    titleFont: { family: 'var(--mono)', size: 11 },
+                    bodyFont: { family: 'var(--sans)', size: 11 }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { color: borderColor, drawTicks: false },
+                    ticks: {
+                        color: textMuted,
+                        font: { size: 9, family: 'var(--mono)' },
+                        maxTicksLimit: 8
+                    }
+                },
+                y: {
+                    grid: { color: borderColor, drawTicks: false },
+                    ticks: {
+                        color: textMuted,
+                        font: { size: 9, family: 'var(--mono)' }
+                    }
+                }
+            }
+        }
+    });
+});
 </script>
 {% endblock %}

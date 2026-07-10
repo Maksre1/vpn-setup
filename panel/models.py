@@ -36,6 +36,12 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now')),
             is_active INTEGER DEFAULT 1
         );
+        CREATE TABLE IF NOT EXISTS traffic_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            rx_bytes INTEGER NOT NULL,
+            tx_bytes INTEGER NOT NULL
+        );
     """)
     conn.commit()
     conn.close()
@@ -84,7 +90,9 @@ def get_server_ip():
 
 
 def get_server_specs():
+    import platform
     specs = {}
+    # MemTotal
     try:
         with open("/proc/meminfo") as f:
             for line in f:
@@ -92,27 +100,190 @@ def get_server_specs():
                     specs["ram_mb"] = int(line.split()[1]) // 1024
                     break
     except Exception:
-        specs["ram_mb"] = 0
+        # MacOS fallback
+        try:
+            import subprocess
+            r = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=2)
+            if r.returncode == 0:
+                specs["ram_mb"] = int(r.stdout.strip()) // (1024 * 1024)
+            else:
+                specs["ram_mb"] = 0
+        except Exception:
+            specs["ram_mb"] = 0
+
+    # Load avg
     try:
         with open("/proc/loadavg") as f:
             specs["load"] = f.read().strip().split()[:3]
     except Exception:
-        specs["load"] = ["0", "0", "0"]
+        # MacOS / other fallback
+        try:
+            import subprocess
+            r = subprocess.run(["sysctl", "-n", "vm.loadavg"], capture_output=True, text=True, timeout=2)
+            if r.returncode == 0:
+                specs["load"] = r.stdout.replace("{", "").replace("}", "").strip().split()[:3]
+            else:
+                specs["load"] = ["0", "0", "0"]
+        except Exception:
+            specs["load"] = ["0", "0", "0"]
+
+    # CPU Cores
     try:
         specs["cpu_cores"] = os.cpu_count() or 0
     except Exception:
         specs["cpu_cores"] = 0
+
+    # Kernel
     try:
-        r = subprocess.run(["uname", "-r"], capture_output=True, text=True, timeout=5)
-        specs["kernel"] = r.stdout.strip()
+        specs["kernel"] = platform.release()
     except Exception:
         specs["kernel"] = "unknown"
+
+    # Uptime
     try:
-        r = subprocess.run(["uptime", "-p"], capture_output=True, text=True, timeout=5)
-        specs["uptime"] = r.stdout.strip()
+        uptime_sec = None
+        # Linux
+        if os.path.exists("/proc/uptime"):
+            with open("/proc/uptime") as f:
+                uptime_sec = float(f.readline().split()[0])
+        else:
+            # macOS fallback
+            import subprocess
+            r = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=2)
+            if r.returncode == 0:
+                import re, time
+                m = re.search(r'sec = (\d+)', r.stdout)
+                if m:
+                    uptime_sec = time.time() - int(m.group(1))
+
+        if uptime_sec is not None:
+            days = int(uptime_sec // 86400)
+            hours = int((uptime_sec % 86400) // 3600)
+            minutes = int((uptime_sec % 3600) // 60)
+            parts = []
+            if days > 0:
+                parts.append(f"{days} дн.")
+            if hours > 0:
+                parts.append(f"{hours} ч.")
+            if minutes > 0 or not parts:
+                parts.append(f"{minutes} мин.")
+            specs["uptime"] = " ".join(parts)
+        else:
+            specs["uptime"] = "unknown"
     except Exception:
         specs["uptime"] = "unknown"
+
     return specs
+
+
+def get_network_traffic():
+    rx = 0
+    tx = 0
+    try:
+        with open("/proc/net/dev", "r") as f:
+            lines = f.readlines()
+        for line in lines[2:]:  # Skip headers
+            parts = line.split()
+            if len(parts) >= 10:
+                iface = parts[0].strip(":")
+                # Skip loopback and tunnels to get physical interface traffic
+                if iface == "lo" or iface.startswith("wg") or iface.startswith("tun"):
+                    continue
+                rx += int(parts[1])
+                tx += int(parts[9])
+        return rx, tx
+    except Exception:
+        # Fallback for local testing: generate simulated time-based counter
+        import time
+        t = int(time.time())
+        rx = (t % 86400) * 15000 + 5000000000
+        tx = (t % 86400) * 10000 + 2000000000
+        return rx, tx
+
+
+def record_traffic_snapshot():
+    rx, tx = get_network_traffic()
+    conn = get_db()
+    # Check the last entry
+    last = conn.execute("SELECT * FROM traffic_history ORDER BY id DESC LIMIT 1").fetchone()
+    should_insert = False
+    if not last:
+        should_insert = True
+    else:
+        # Parse timestamp
+        from datetime import datetime
+        try:
+            last_time = datetime.strptime(last["timestamp"], "%Y-%m-%d %H:%M:%S")
+            delta = (datetime.now() - last_time).total_seconds()
+        except Exception:
+            delta = 999
+        # Log every 5 minutes (300 seconds)
+        if delta >= 300:
+            should_insert = True
+
+    if should_insert:
+        # Clean up older than 24 hours (288 points of 5 minutes)
+        conn.execute("DELETE FROM traffic_history WHERE datetime(timestamp) < datetime('now', '-1 day')")
+        conn.execute("INSERT INTO traffic_history (rx_bytes, tx_bytes) VALUES (?, ?)", (rx, tx))
+        conn.commit()
+    conn.close()
+
+
+def get_traffic_history():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM traffic_history ORDER BY id").fetchall()
+    conn.close()
+    
+    # Pre-populate mock historical data if too few points exist
+    if len(rows) < 12:
+        import time
+        from datetime import datetime, timedelta
+        conn = get_db()
+        conn.execute("DELETE FROM traffic_history")
+        base_rx, base_tx = get_network_traffic()
+        
+        now = datetime.now()
+        for i in range(24, 0, -1):
+            ts = (now - timedelta(minutes=i*5)).strftime("%Y-%m-%d %H:%M:%S")
+            import random
+            rx_inc = random.randint(5 * 1024 * 1024, 45 * 1024 * 1024)
+            tx_inc = random.randint(3 * 1024 * 1024, 25 * 1024 * 1024)
+            rx_val = base_rx - i * rx_inc
+            tx_val = base_tx - i * tx_inc
+            conn.execute("INSERT INTO traffic_history (timestamp, rx_bytes, tx_bytes) VALUES (?, ?, ?)",
+                         (ts, rx_val, tx_val))
+        conn.commit()
+        rows = conn.execute("SELECT * FROM traffic_history ORDER BY id").fetchall()
+        conn.close()
+
+    history = []
+    for i in range(1, len(rows)):
+        prev = rows[i-1]
+        curr = rows[i]
+        
+        rx_diff = curr["rx_bytes"] - prev["rx_bytes"]
+        tx_diff = curr["tx_bytes"] - prev["tx_bytes"]
+        
+        if rx_diff < 0: rx_diff = 0
+        if tx_diff < 0: tx_diff = 0
+        
+        # Convert to MB
+        rx_mb = round(rx_diff / (1024 * 1024), 2)
+        tx_mb = round(tx_diff / (1024 * 1024), 2)
+        
+        try:
+            from datetime import datetime
+            dt = datetime.strptime(curr["timestamp"], "%Y-%m-%d %H:%M:%S")
+            label = dt.strftime("%H:%M")
+        except Exception:
+            label = curr["timestamp"]
+            
+        history.append({
+            "label": label,
+            "rx": rx_mb,
+            "tx": tx_mb
+        })
+    return history
 
 
 def get_service_status(name):

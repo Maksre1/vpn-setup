@@ -16,7 +16,8 @@ from models import (
     init_db, get_db, get_mieru_config, get_hysteria2_config,
     get_subscription_paths, get_server_ip, get_server_specs,
     get_all_service_statuses, restart_service, get_logs,
-    sync_user_to_conf, remove_user_from_conf, update_mieru_users
+    sync_user_to_conf, remove_user_from_conf, update_mieru_users,
+    record_traffic_snapshot, get_traffic_history
 )
 from utils import (
     gen_password, gen_random_path, get_hysteria2_uri, get_mieru_uri,
@@ -110,6 +111,7 @@ def logout():
 @app.route("/")
 @login_required
 def dashboard():
+    record_traffic_snapshot()
     statuses = get_all_service_statuses()
     specs = get_server_specs()
     server_ip = get_server_ip()
@@ -121,16 +123,19 @@ def dashboard():
     active = sum(1 for u in users if not is_expired(u["expire_date"]) and u["is_active"])
     expired = sum(1 for u in users if is_expired(u["expire_date"]))
     total = len(users)
+    traffic_history = get_traffic_history()
 
     return render_template("dashboard.html",
                            statuses=statuses, specs=specs,
                            server_ip=server_ip,
-                           active=active, expired=expired, total=total)
+                           active=active, expired=expired, total=total,
+                           traffic_history=traffic_history)
 
 
 @app.route("/api/status")
 @login_required
 def api_status():
+    record_traffic_snapshot()
     return jsonify(get_all_service_statuses())
 
 
