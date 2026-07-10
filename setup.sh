@@ -1281,7 +1281,7 @@ rules:
   - DOMAIN-SUFFIX,mailagent.ru,DIRECT
   - DOMAIN-SUFFIX,vk.com,DIRECT
   - DOMAIN-SUFFIX,vk.ru,DIRECT
-  - DOMAIN-SUFFIX,mc vk.com,DIRECT
+  - DOMAIN-SUFFIX,mc.vk.com,DIRECT
   - DOMAIN-SUFFIX,ok.ru,DIRECT
   - DOMAIN-SUFFIX,odnoklassniki.ru,DIRECT
   - DOMAIN-SUFFIX,max.ru,DIRECT
