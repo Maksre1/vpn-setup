@@ -329,25 +329,22 @@ def api_logs(service):
 
 
 # ── Init ─────────────────────────────────────────────────────────────────────
-@app.before_request
-def ensure_db():
-    if not hasattr(app, "_db_initialized"):
-        init_db()
-        # Создать дефолтного админа если нет
-        conn = get_db()
-        if conn.execute("SELECT COUNT(*) FROM admin").fetchone()[0] == 0:
-            default_pass = gen_password(16)
-            conn.execute(
-                "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
-                ("admin", generate_password_hash(default_pass))
-            )
-            conn.commit()
-            # Записать пароль в файл
-            with open("/etc/vpn-panel/admin_password.txt", "w") as f:
-                f.write(f"admin:{default_pass}\n")
-            os.chmod("/etc/vpn-panel/admin_password.txt", 0o600)
-        conn.close()
-        app._db_initialized = True
+def _ensure_admin():
+    """Создать дефолтного админа при первом запуске."""
+    init_db()
+    conn = get_db()
+    if conn.execute("SELECT COUNT(*) FROM admin").fetchone()[0] == 0:
+        default_pass = gen_password(16)
+        conn.execute(
+            "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
+            ("admin", generate_password_hash(default_pass))
+        )
+        conn.commit()
+        os.makedirs("/etc/vpn-panel", exist_ok=True)
+        with open("/etc/vpn-panel/admin_password.txt", "w") as f:
+            f.write(f"admin:{default_pass}\n")
+        os.chmod("/etc/vpn-panel/admin_password.txt", 0o600)
+    conn.close()
 
 
 if __name__ == "__main__":
@@ -359,5 +356,9 @@ if __name__ == "__main__":
         from utils import gen_ecdsa_cert
         gen_ecdsa_cert(cert_dir, "vpn-panel")
 
+    # Создаём админа при старте
+    _ensure_admin()
+
     port = int(PANEL_PORT)
+    print(f"VPN Panel starting on port {port}...")
     app.run(host="0.0.0.0", port=port, ssl_context=(crt_file, key_file))
