@@ -19,6 +19,7 @@
     <nav class="sidebar-nav">
         <a class="sidebar-link {{ if eq .ActiveTab "dashboard" }}active{{ end }}" href="/"><i class="bi bi-grid-1x2"></i> Обзор</a>
         <a class="sidebar-link {{ if eq .ActiveTab "users" }}active{{ end }}" href="/users"><i class="bi bi-people"></i> Пользователи</a>
+        <a class="sidebar-link {{ if eq .ActiveTab "inbounds" }}active{{ end }}" href="/inbounds"><i class="bi bi-diagram-3"></i> Подключения</a>
         <a class="sidebar-link {{ if eq .ActiveTab "logs" }}active{{ end }}" href="/logs"><i class="bi bi-terminal"></i> Логи</a>
         <a class="sidebar-link {{ if eq .ActiveTab "settings" }}active{{ end }}" href="/settings"><i class="bi bi-gear"></i> Настройки</a>
     </nav>

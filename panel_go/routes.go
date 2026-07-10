@@ -295,6 +295,261 @@ func setupRoutes(r *gin.Engine) {
 	auth.Use(authRequired())
 	auth.Use(verifyCSRF())
 
+	// Inbounds HTML Page view
+	auth.GET("/inbounds", func(c *gin.Context) {
+		rows, err := db.Query("SELECT id, remark, protocol, port, settings, is_active FROM inbounds")
+		if err != nil {
+			c.String(http.StatusInternalServerError, "Ошибка БД: %v", err)
+			return
+		}
+		defer rows.Close()
+
+		var inbounds []Inbound
+		for rows.Next() {
+			var ib Inbound
+			if err := rows.Scan(&ib.ID, &ib.Remark, &ib.Protocol, &ib.Port, &ib.Settings, &ib.IsActive); err == nil {
+				inbounds = append(inbounds, ib)
+			}
+		}
+
+		renderTemplate(c, "inbounds.html", "Подключения", "inbounds", gin.H{
+			"Inbounds": inbounds,
+		})
+	})
+
+	// Add/Edit Inbound APIs
+	auth.POST("/api/inbounds/save", func(c *gin.Context) {
+		idStr := c.PostForm("id")
+		remark := c.PostForm("remark")
+		protocol := c.PostForm("protocol")
+		port, _ := strconv.Atoi(c.PostForm("port"))
+		isActive := 0
+		if c.PostForm("is_active") == "1" || c.PostForm("is_active") == "on" {
+			isActive = 1
+		}
+
+		// Settings JSON parsing/building
+		settings := make(map[string]interface{})
+		settings["sniffing"] = c.PostForm("sniffing") == "1" || c.PostForm("sniffing") == "on"
+		settings["transport"] = c.PostForm("transport")
+
+		switch protocol {
+		case "vless":
+			settings["security"] = c.PostForm("security")
+			settings["utls"] = c.PostForm("utls")
+			settings["sni"] = c.PostForm("sni")
+			settings["reality_dest"] = c.PostForm("reality_dest")
+			settings["private_key"] = c.PostForm("private_key")
+			settings["public_key"] = c.PostForm("public_key")
+			settings["short_id"] = c.PostForm("short_id")
+		case "trojan":
+			settings["security"] = c.PostForm("security")
+			settings["cert_path"] = c.PostForm("cert_path")
+			settings["key_path"] = c.PostForm("key_path")
+		case "shadowsocks":
+			settings["cipher"] = c.PostForm("cipher")
+		case "hysteria2":
+			settings["obfs_password"] = c.PostForm("obfs_password")
+			settings["cert_cn"] = c.PostForm("cert_cn")
+			settings["cert_pin_hex"] = c.PostForm("cert_pin_hex")
+			settings["cert_path"] = c.PostForm("cert_path")
+			settings["key_path"] = c.PostForm("key_path")
+		case "mieru":
+			settings["transport"] = c.PostForm("transport")
+		}
+
+		settingsBytes, _ := json.Marshal(settings)
+		settingsJSON := string(settingsBytes)
+
+		var dbErr error
+		if idStr == "" {
+			// Insert new inbound
+			_, dbErr = db.Exec("INSERT INTO inbounds (remark, protocol, port, settings, is_active) VALUES (?, ?, ?, ?, ?)",
+				remark, protocol, port, settingsJSON, isActive)
+		} else {
+			// Update inbound
+			id, _ := strconv.Atoi(idStr)
+			_, dbErr = db.Exec("UPDATE inbounds SET remark=?, protocol=?, port=?, settings=?, is_active=? WHERE id=?",
+				remark, protocol, port, settingsJSON, isActive, id)
+		}
+
+		if dbErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "msg": dbErr.Error()})
+			return
+		}
+
+		// Trigger service updates
+		if protocol == "mieru" {
+			updateMieruUsers()
+		} else if protocol == "hysteria2" {
+			updateHysteriaUsers()
+		} else {
+			updateSingboxUsers()
+		}
+
+		c.JSON(http.StatusOK, gin.H{"ok": true, "msg": "Подключение успешно сохранено"})
+	})
+
+	auth.POST("/api/inbounds/:id/toggle", func(c *gin.Context) {
+		id, _ := strconv.Atoi(c.Param("id"))
+		var protocol string
+		var isActive int
+		err := db.QueryRow("SELECT protocol, is_active FROM inbounds WHERE id=?", id).Scan(&protocol, &isActive)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"ok": false, "msg": "Подключение не найдено"})
+			return
+		}
+
+		newActive := 1 - isActive
+		_, err = db.Exec("UPDATE inbounds SET is_active=? WHERE id=?", newActive, id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "msg": err.Error()})
+			return
+		}
+
+		if protocol == "mieru" {
+			updateMieruUsers()
+		} else if protocol == "hysteria2" {
+			updateHysteriaUsers()
+		} else {
+			updateSingboxUsers()
+		}
+
+		c.JSON(http.StatusOK, gin.H{"ok": true, "msg": "Статус изменен", "is_active": newActive})
+	})
+
+	auth.POST("/api/inbounds/:id/delete", func(c *gin.Context) {
+		id, _ := strconv.Atoi(c.Param("id"))
+		var protocol string
+		err := db.QueryRow("SELECT protocol FROM inbounds WHERE id=?", id).Scan(&protocol)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"ok": false, "msg": "Подключение не найдено"})
+			return
+		}
+
+		_, err = db.Exec("DELETE FROM inbounds WHERE id=?", id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "msg": err.Error()})
+			return
+		}
+
+		if protocol == "mieru" {
+			updateMieruUsers()
+		} else if protocol == "hysteria2" {
+			updateHysteriaUsers()
+		} else {
+			updateSingboxUsers()
+		}
+
+		c.JSON(http.StatusOK, gin.H{"ok": true, "msg": "Подключение удалено"})
+	})
+
+	// Add an endpoint to generate Reality X25519 Keys on backend
+	auth.POST("/api/reality/generate-keys", func(c *gin.Context) {
+		priv, pub, err := generateRealityKeyPair()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "msg": "Не удалось запустить sing-box для генерации ключей: " + err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "private_key": priv, "public_key": pub})
+	})
+
+	// Fetch dynamic URIs for user info modal
+	auth.GET("/api/users/:username/uris", func(c *gin.Context) {
+		username := c.Param("username")
+		var password, protocol string
+		err := db.QueryRow("SELECT password, protocol FROM users WHERE username=?", username).Scan(&password, &protocol)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"ok": false, "msg": "Пользователь не найден"})
+			return
+		}
+
+		serverIP := getServerIP()
+
+		// Fetch active inbounds
+		rows, err := db.Query("SELECT protocol, remark, port, settings FROM inbounds WHERE is_active=1")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "msg": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		type Connection struct {
+			Remark   string `json:"remark"`
+			Protocol string `json:"protocol"`
+			Uri      string `json:"uri"`
+		}
+		var connections []Connection
+
+		for rows.Next() {
+			var proto, remark, settingsJSON string
+			var port int
+			if err := rows.Scan(&proto, &remark, &port, &settingsJSON); err == nil {
+				// Filter by user protocol choice
+				if protocol != "all" && protocol != proto {
+					continue
+				}
+
+				var settings map[string]interface{}
+				_ = json.Unmarshal([]byte(settingsJSON), &settings)
+				if settings == nil {
+					settings = make(map[string]interface{})
+				}
+
+				uri := ""
+				switch proto {
+				case "hysteria2":
+					obfsPassword, _ := settings["obfs_password"].(string)
+					certCN, _ := settings["cert_cn"].(string)
+					certPinHex, _ := settings["cert_pin_hex"].(string)
+					uri = fmt.Sprintf("hysteria2://%s@%s:%d?obfs=salamander&obfs-password=%s&sni=%s",
+						password, serverIP, port, obfsPassword, certCN)
+					if certPinHex != "" {
+						uri += "&pinSHA256=" + certPinHex
+					}
+					uri += "#" + remark
+
+				case "mieru":
+					uri = fmt.Sprintf("mieru://%s:%d?username=%s&password=%s&network=udp#%s",
+						serverIP, port, username, password, remark)
+
+				case "vless":
+					uuid := getUUID(password)
+					pubKey, _ := settings["public_key"].(string)
+					shortId, _ := settings["short_id"].(string)
+					sni, _ := settings["sni"].(string)
+					uri = fmt.Sprintf("vless://%s@%s:%d?security=reality&sni=%s&fp=firefox&pbk=%s&sid=%s&type=tcp#%s",
+						uuid, serverIP, port, sni, pubKey, shortId, remark)
+
+				case "trojan":
+					uri = fmt.Sprintf("trojan://%s@%s:%d?security=tls&sni=%s&allowInsecure=1#%s",
+						password, serverIP, port, serverIP, remark)
+
+				case "shadowsocks":
+					cipher := "aes-256-gcm"
+					if cs, ok := settings["cipher"].(string); ok && cs != "" {
+						cipher = cs
+					}
+					auth := base64.StdEncoding.EncodeToString([]byte(cipher + ":" + password))
+					uri = fmt.Sprintf("ss://%s@%s:%d#%s", auth, serverIP, port, remark)
+				}
+
+				if uri != "" {
+					connections = append(connections, Connection{
+						Remark:   remark,
+						Protocol: proto,
+						Uri:      uri,
+					})
+				}
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"ok":          true,
+			"connections": connections,
+		})
+	})
+
 	auth.GET("/", func(c *gin.Context) {
 		var active, expired, total int
 		_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE is_active=1").Scan(&active)

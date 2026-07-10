@@ -1,0 +1,566 @@
+{{ define "title" }}Подключения{{ end }}
+{{ define "topbar" }}Управление подключениями{{ end }}
+{{ define "content" }}
+
+<div class="panel">
+    <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center; width:100%;">
+        <span>Входящие подключения (Inbounds)</span>
+        <button class="btn btn-accent btn-sm" onclick="openAddInboundModal()"><i class="bi bi-plus-lg"></i> Добавить подключение</button>
+    </div>
+    <div class="panel-body" style="padding:0; overflow-x:auto;">
+        <table class="table" style="margin:0;">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Примечание</th>
+                    <th>Протокол</th>
+                    <th>Порт</th>
+                    <th>Дополнительно</th>
+                    <th>Статус</th>
+                    <th style="width:120px;">Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{ range .Inbounds }}
+                <tr>
+                    <td>{{ .ID }}</td>
+                    <td style="font-weight:600;">{{ .Remark }}</td>
+                    <td><span class="badge" style="background:var(--accent-light); color:var(--accent);">{{ .Protocol }}</span></td>
+                    <td class="mono font-semibold">{{ .Port }}</td>
+                    <td style="font-size:12px; color:var(--text-secondary); max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" id="inbound-desc-{{ .ID }}">
+                        {{ .Settings }}
+                    </td>
+                    <td>
+                        <label class="switch">
+                            <input type="checkbox" {{ if eq .IsActive 1 }}checked{{ end }} onclick="toggleInbound({{ .ID }})">
+                            <span class="slider"></span>
+                        </label>
+                    </td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn btn-sm btn-icon" onclick="openEditInboundModal({{ .ID }}, '{{ .Remark }}', '{{ .Protocol }}', {{ .Port }}, {{ .IsActive }}, '{{ .Settings }}')" title="Редактировать"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-icon btn-danger" onclick="deleteInbound({{ .ID }}, '{{ .Remark }}')" title="Удалить"><i class="bi bi-trash3"></i></button>
+                    </td>
+                </tr>
+                {{ end }}
+                {{ if not .Inbounds }}
+                <tr><td colspan="7" class="empty" style="text-align:center; padding:30px; color:var(--text-secondary);">Нет подключений</td></tr>
+                {{ end }}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Modal: Add/Edit Inbound -->
+<div class="modal" id="inboundModal">
+    <div class="modal-content" style="max-width:650px;">
+        <div class="modal-header" style="padding:20px; border-bottom:1px solid var(--border);">
+            <span id="modalInboundTitle">Создать подключение</span>
+            <button class="btn btn-sm btn-icon" onclick="closeInboundModal()" style="background:none; border:none; color:var(--text-secondary);"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <form id="inboundForm" onsubmit="submitInboundForm(event)">
+            <input type="hidden" name="id" id="formInboundId">
+            <div class="modal-body" style="padding:0;">
+                <!-- Tab Headers -->
+                <div style="display:flex; gap:4px; border-bottom:1px solid var(--border); background:rgba(255,255,255,0.01); padding:10px 20px 0 20px; overflow-x:auto;">
+                    <button type="button" class="btn tab-btn active" id="tabInbGeneralBtn" onclick="switchInbTab('General')">Основное</button>
+                    <button type="button" class="btn tab-btn" id="tabInbProtoBtn" onclick="switchInbTab('Proto')">Протокол</button>
+                    <button type="button" class="btn tab-btn" id="tabInbStreamBtn" onclick="switchInbTab('Stream')">Поток</button>
+                    <button type="button" class="btn tab-btn" id="tabInbSecurityBtn" onclick="switchInbTab('Security')">Безопасность</button>
+                    <button type="button" class="btn tab-btn" id="tabInbSniffBtn" onclick="switchInbTab('Sniff')">Сниффинг</button>
+                </div>
+
+                <!-- Tab: General -->
+                <div id="tabInbContentGeneral" class="tab-content-inb" style="padding:20px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; padding:12px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border);">
+                        <div>
+                            <span style="font-weight:600; display:block; font-size:13.5px;">Включить подключение</span>
+                            <small style="color:var(--text-secondary);">Активное подключение будет запущено на сервере</small>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" name="is_active" id="formInbIsActive" value="1" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Примечание / Remark</label>
+                        <input type="text" name="remark" id="formInbRemark" class="form-control" required placeholder="Например: VLESS-Reality-New">
+                    </div>
+
+                    <div class="grid-2">
+                        <div class="form-group">
+                            <label>Протокол</label>
+                            <select name="protocol" id="formInbProtocol" class="form-control" onchange="handleProtocolChange(this.value)">
+                                <option value="vless">vless</option>
+                                <option value="trojan">trojan</option>
+                                <option value="shadowsocks">shadowsocks</option>
+                                <option value="hysteria2">hysteria2</option>
+                                <option value="mieru">mieru</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Порт</label>
+                            <div style="display:flex; gap:8px;">
+                                <input type="number" name="port" id="formInbPort" class="form-control mono font-bold" required min="1" max="65535" placeholder="Например: 443">
+                                <button type="button" class="btn" onclick="generateRandomPort()" title="Сгенерировать свободный порт"><i class="bi bi-arrow-repeat"></i></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab: Protocol-Specific -->
+                <div id="tabInbContentProto" class="tab-content-inb" style="display:none; padding:20px;">
+                    <div id="protoSectionVless">
+                        <div class="grid-2">
+                            <div class="form-group">
+                                <label>Расшифровка / Flow</label>
+                                <input type="text" name="flow" class="form-control" value="none" readonly style="opacity:0.7;">
+                            </div>
+                            <div class="form-group">
+                                <label>Шифрование / Encryption</label>
+                                <input type="text" name="encryption" class="form-control" value="none" readonly style="opacity:0.7;">
+                            </div>
+                        </div>
+                        <div style="margin-top:16px; padding:14px; background:var(--accent-light); border:1px solid var(--accent-border); border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
+                            <div>
+                                <span style="font-weight:600; color:var(--accent); font-size:13.5px; display:block;">Reality X25519 Ключи</span>
+                                <small style="color:var(--text-secondary);">Необходимы для работы шифрования Reality</small>
+                            </div>
+                            <button type="button" class="btn btn-accent btn-sm" onclick="generateRealityKeyPairDB()"><i class="bi bi-key-fill"></i> Сгенерировать</button>
+                        </div>
+                    </div>
+                    <div id="protoSectionSS" style="display:none;">
+                        <div class="form-group">
+                            <label>Метод шифрования Shadowsocks</label>
+                            <select name="cipher" id="formInbCipher" class="form-control">
+                                <option value="aes-256-gcm">aes-256-gcm (Рекомендуется)</option>
+                                <option value="aes-128-gcm">aes-128-gcm</option>
+                                <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="protoSectionH2" style="display:none;">
+                        <div class="form-group">
+                            <label>Hysteria2 Obfs Пароль</label>
+                            <input type="text" name="obfs_password" id="formInbObfsPassword" class="form-control" placeholder="Оставьте пустым для автогенерации">
+                        </div>
+                    </div>
+                    <div id="protoSectionDefault" style="display:none; text-align:center; padding:30px; color:var(--text-secondary);">
+                        Для данного протокола нет специфических настроек.
+                    </div>
+                </div>
+
+                <!-- Tab: Stream / Transport -->
+                <div id="tabInbContentStream" class="tab-content-inb" style="display:none; padding:20px;">
+                    <div class="form-group">
+                        <label>Транспортный протокол</label>
+                        <select name="transport" id="formInbTransport" class="form-control">
+                            <option value="tcp">TCP (RAW)</option>
+                            <option value="ws">WebSocket</option>
+                            <option value="grpc">gRPC</option>
+                            <option value="udp">UDP (Mieru)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Proxy Protocol</label>
+                        <select name="proxy_protocol" class="form-control" disabled style="opacity:0.6;">
+                            <option value="0">Отключено</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Tab: Security -->
+                <div id="tabInbContentSecurity" class="tab-content-inb" style="display:none; padding:20px;">
+                    <div id="securitySectionVless">
+                        <div class="grid-2">
+                            <div class="form-group">
+                                <label>Безопасность</label>
+                                <select name="security" id="formInbSecurity" class="form-control">
+                                    <option value="reality">Reality</option>
+                                    <option value="tls">TLS</option>
+                                    <option value="none">Нет</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>uTLS Fingerprint</label>
+                                <select name="utls" id="formInbUtls" class="form-control">
+                                    <option value="firefox">firefox (Рекомендуется)</option>
+                                    <option value="chrome">chrome</option>
+                                    <option value="safari">safari</option>
+                                    <option value="edge">edge</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="grid-2">
+                            <div class="form-group">
+                                <label>Reality Цель (Dest)</label>
+                                <input type="text" name="reality_dest" id="formInbRealityDest" class="form-control mono" value="apps.apple.com:443" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Reality SNI</label>
+                                <input type="text" name="sni" id="formInbSni" class="form-control mono" value="apps.apple.com" required>
+                            </div>
+                        </div>
+
+                        <div class="grid-2">
+                            <div class="form-group">
+                                <label>Short ID (8 байт hex)</label>
+                                <div style="display:flex; gap:8px;">
+                                    <input type="text" name="short_id" id="formInbShortId" class="form-control mono" required maxlength="16">
+                                    <button type="button" class="btn" onclick="generateShortId()" title="Сгенерировать случайный Short ID"><i class="bi bi-arrow-repeat"></i></button>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>SpiderX</label>
+                                <input type="text" name="spiderx" class="form-control mono" value="/">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Приватный ключ / Private Key</label>
+                            <input type="text" name="private_key" id="formInbPrivateKey" class="form-control mono" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Публичный ключ / Public Key</label>
+                            <input type="text" name="public_key" id="formInbPublicKey" class="form-control mono" required>
+                        </div>
+                    </div>
+
+                    <div id="securitySectionTLS" style="display:none;">
+                        <div class="form-group">
+                            <label>Путь к Сертификату (.crt)</label>
+                            <input type="text" name="cert_path" id="formInbCertPath" class="form-control mono" value="/etc/hysteria/certs/server.crt">
+                        </div>
+                        <div class="form-group">
+                            <label>Путь к Приватному ключу (.key)</label>
+                            <input type="text" name="key_path" id="formInbKeyPath" class="form-control mono" value="/etc/hysteria/certs/server.key">
+                        </div>
+                        <div class="form-group" id="h2CnGroup">
+                            <label>Сертификат CN (для Hysteria2)</label>
+                            <input type="text" name="cert_cn" id="formInbCertCn" class="form-control mono">
+                        </div>
+                        <div class="form-group" id="h2PinGroup">
+                            <label>Сертификат Pin SHA256 Hex (для Hysteria2)</label>
+                            <input type="text" name="cert_pin_hex" id="formInbCertPinHex" class="form-control mono">
+                        </div>
+                    </div>
+
+                    <div id="securitySectionDefault" style="display:none; text-align:center; padding:30px; color:var(--text-secondary);">
+                        Для данного протокола безопасность настраивается автоматически.
+                    </div>
+                </div>
+
+                <!-- Tab: Sniffing -->
+                <div id="tabInbContentSniff" class="tab-content-inb" style="display:none; padding:20px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; padding:12px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border);">
+                        <div>
+                            <span style="font-weight:600; display:block; font-size:13.5px;">Включить Сниффинг (Sniffing)</span>
+                            <small style="color:var(--text-secondary);">Перехват доменных имен для обхода блокировок и маршрутизации</small>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" name="sniffing" id="formInbSniffing" value="1" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div style="padding:14px; background:rgba(255,255,255,0.01); border:1px solid var(--border); border-radius:8px; display:flex; flex-direction:column; gap:10px;">
+                        <label style="display:flex; align-items:center; gap:8px; opacity:0.8;"><input type="checkbox" checked disabled> HTTP Сниффинг</label>
+                        <label style="display:flex; align-items:center; gap:8px; opacity:0.8;"><input type="checkbox" checked disabled> TLS Сниффинг</label>
+                        <label style="display:flex; align-items:center; gap:8px; opacity:0.8;"><input type="checkbox" checked disabled> QUIC Сниффинг</label>
+                        <label style="display:flex; align-items:center; gap:8px; opacity:0.8;"><input type="checkbox" checked disabled> FakeDNS перехват</label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding:16px 20px; border-top:1px solid var(--border); display:flex; justify-content:end; gap:10px;">
+                <button type="button" class="btn" onclick="closeInboundModal()">Отмена</button>
+                <button type="submit" class="btn btn-accent">Сохранить</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<style>
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+}
+.switch input { 
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255,255,255,0.08);
+  transition: .25s ease;
+  border-radius: 24px;
+  border: 1px solid var(--border);
+}
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: var(--text-primary);
+  transition: .25s ease;
+  border-radius: 50%;
+}
+input:checked + .slider {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+input:checked + .slider:before {
+  transform: translateX(20px);
+}
+.tab-content-inb {
+  min-height: 280px;
+}
+.badge {
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+</style>
+
+{{ end }}
+{{ define "scripts" }}
+<script>
+// JSON parsing pretty helper for description
+document.querySelectorAll('[id^="inbound-desc-"]').forEach(el => {
+    try {
+        const data = JSON.parse(el.textContent);
+        let desc = [];
+        if (data.security) desc.push("Sec: " + data.security);
+        if (data.utls) desc.push("uTLS: " + data.utls);
+        if (data.sni) desc.push("SNI: " + data.sni);
+        if (data.cipher) desc.push("Cipher: " + data.cipher);
+        if (data.obfs_password) desc.push("Obfs: salamander");
+        el.textContent = desc.join(" | ") || "По умолчанию";
+    } catch(e) {}
+});
+
+function switchInbTab(name) {
+    document.querySelectorAll('.tab-content-inb').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+    
+    document.getElementById('tabInbContent' + name).style.display = 'block';
+    document.getElementById('tabInb' + name + 'Btn').classList.add('active');
+}
+
+function handleProtocolChange(proto) {
+    // Show/hide Specific settings
+    document.getElementById('protoSectionVless').style.display = (proto === 'vless') ? 'block' : 'none';
+    document.getElementById('protoSectionSS').style.display = (proto === 'shadowsocks') ? 'block' : 'none';
+    document.getElementById('protoSectionH2').style.display = (proto === 'hysteria2') ? 'block' : 'none';
+    
+    if (proto !== 'vless' && proto !== 'shadowsocks' && proto !== 'hysteria2') {
+        document.getElementById('protoSectionDefault').style.display = 'block';
+    } else {
+        document.getElementById('protoSectionDefault').style.display = 'none';
+    }
+
+    // Show/hide Security settings
+    document.getElementById('securitySectionVless').style.display = (proto === 'vless') ? 'block' : 'none';
+    document.getElementById('securitySectionTLS').style.display = (proto === 'trojan' || proto === 'hysteria2') ? 'block' : 'none';
+    
+    if (proto !== 'vless' && proto !== 'trojan' && proto !== 'hysteria2') {
+        document.getElementById('securitySectionDefault').style.display = 'block';
+    } else {
+        document.getElementById('securitySectionDefault').style.display = 'none';
+    }
+
+    // Autofill defaults
+    if (proto === 'vless') {
+        document.getElementById('formInbTransport').value = 'tcp';
+    } else if (proto === 'mieru') {
+        document.getElementById('formInbTransport').value = 'udp';
+    } else {
+        document.getElementById('formInbTransport').value = 'tcp';
+    }
+
+    // Show/Hide specific fields inside TLS section
+    document.getElementById('h2CnGroup').style.display = (proto === 'hysteria2') ? 'block' : 'none';
+    document.getElementById('h2PinGroup').style.display = (proto === 'hysteria2') ? 'block' : 'none';
+}
+
+function generateRandomPort() {
+    const port = Math.floor(Math.random() * (65000 - 15000 + 1)) + 15000;
+    document.getElementById('formInbPort').value = port;
+}
+
+function generateShortId() {
+    const chars = '0123456789abcdef';
+    let id = '';
+    for (let i = 0; i < 16; i++) {
+        id += chars[Math.floor(Math.random() * 16)];
+    }
+    document.getElementById('formInbShortId').value = id;
+}
+
+function generateRealityKeyPairDB() {
+    showToast('Генерация Reality ключей...', 'warning');
+    fetch('/api/reality/generate-keys', {
+        method: 'POST',
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            document.getElementById('formInbPrivateKey').value = data.private_key;
+            document.getElementById('formInbPublicKey').value = data.public_key;
+            showToast('Ключи успешно сгенерированы!', 'success');
+        } else {
+            showToast(data.msg || 'Ошибка генерации', 'danger');
+        }
+    })
+    .catch(() => showToast('Произошла ошибка при генерации ключей', 'danger'));
+}
+
+function openAddInboundModal() {
+    document.getElementById('modalInboundTitle').textContent = 'Создать подключение';
+    document.getElementById('formInboundId').value = '';
+    document.getElementById('inboundForm').reset();
+    
+    generateRandomPort();
+    generateShortId();
+    handleProtocolChange('vless');
+    
+    document.getElementById('inboundModal').classList.add('active');
+    switchInbTab('General');
+}
+
+function openEditInboundModal(id, remark, protocol, port, isActive, settingsJSON) {
+    document.getElementById('modalInboundTitle').textContent = 'Редактировать подключение';
+    document.getElementById('formInboundId').value = id;
+    document.getElementById('formInbRemark').value = remark;
+    document.getElementById('formInbProtocol').value = protocol;
+    document.getElementById('formInbPort').value = port;
+    document.getElementById('formInbIsActive').checked = (isActive === 1);
+    
+    handleProtocolChange(protocol);
+    
+    try {
+        const data = JSON.parse(settingsJSON);
+        document.getElementById('formInbSniffing').checked = (data.sniffing === true);
+        if (data.transport) document.getElementById('formInbTransport').value = data.transport;
+        
+        if (protocol === 'vless') {
+            if (data.security) document.getElementById('formInbSecurity').value = data.security;
+            if (data.utls) document.getElementById('formInbUtls').value = data.utls;
+            if (data.sni) document.getElementById('formInbSni').value = data.sni;
+            if (data.reality_dest) document.getElementById('formInbRealityDest').value = data.reality_dest;
+            if (data.private_key) document.getElementById('formInbPrivateKey').value = data.private_key;
+            if (data.public_key) document.getElementById('formInbPublicKey').value = data.public_key;
+            if (data.short_id) document.getElementById('formInbShortId').value = data.short_id;
+        } else if (protocol === 'trojan') {
+            if (data.security) document.getElementById('formInbSecurity').value = data.security;
+            if (data.cert_path) document.getElementById('formInbCertPath').value = data.cert_path;
+            if (data.key_path) document.getElementById('formInbKeyPath').value = data.key_path;
+        } else if (protocol === 'shadowsocks') {
+            if (data.cipher) document.getElementById('formInbCipher').value = data.cipher;
+        } else if (protocol === 'hysteria2') {
+            if (data.obfs_password) document.getElementById('formInbObfsPassword').value = data.obfs_password;
+            if (data.cert_cn) document.getElementById('formInbCertCn').value = data.cert_cn;
+            if (data.cert_pin_hex) document.getElementById('formInbCertPinHex').value = data.cert_pin_hex;
+            if (data.cert_path) document.getElementById('formInbCertPath').value = data.cert_path;
+            if (data.key_path) document.getElementById('formInbKeyPath').value = data.key_path;
+        }
+    } catch(e) {}
+    
+    document.getElementById('inboundModal').classList.add('active');
+    switchInbTab('General');
+}
+
+function closeInboundModal() {
+    document.getElementById('inboundModal').classList.remove('active');
+}
+
+document.getElementById('inboundModal').addEventListener('click', function(e) {
+    if (e.target === this) {
+        closeInboundModal();
+    }
+});
+
+function submitInboundForm(event) {
+    event.preventDefault();
+    const form = document.getElementById('inboundForm');
+    const formData = new FormData(form);
+
+    fetch('/api/inbounds/save', {
+        method: 'POST',
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        },
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            showToast(data.msg, 'success');
+            closeInboundModal();
+            loadPage('/inbounds');
+        } else {
+            showToast(data.msg || 'Ошибка сохранения', 'danger');
+        }
+    })
+    .catch(() => showToast('Произошла ошибка при сохранении', 'danger'));
+}
+
+function toggleInbound(id) {
+    fetch(`/api/inbounds/${id}/toggle`, {
+        method: 'POST',
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            showToast(data.msg, 'success');
+        } else {
+            showToast(data.msg || 'Ошибка переключения', 'danger');
+        }
+    })
+    .catch(() => showToast('Произошла ошибка', 'danger'));
+}
+
+function deleteInbound(id, remark) {
+    if (!confirm(`Вы уверены, что хотите удалить подключение '${remark}'?`)) {
+        return;
+    }
+    fetch(`/api/inbounds/${id}/delete`, {
+        method: 'POST',
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            showToast(data.msg, 'success');
+            loadPage('/inbounds');
+        } else {
+            showToast(data.msg || 'Ошибка удаления', 'danger');
+        }
+    })
+    .catch(() => showToast('Произошла ошибка при удалении', 'danger'));
+}
+</script>
+{{ end }}

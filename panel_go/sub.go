@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,39 +22,11 @@ const (
 	stateDir = "/etc/vpn-setup-state"
 )
 
-// Env Loader helper
-func loadEnv(path string) map[string]string {
-	data := make(map[string]string)
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return data
-	}
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
-			data[key] = val
-		}
-	}
-	return data
-}
-
-func getMieruConfig() map[string]string {
-	return loadEnv(filepath.Join(stateDir, "mieru.env"))
-}
-
-func getHysteria2Config() map[string]string {
-	return loadEnv(filepath.Join(stateDir, "hysteria2.env"))
-}
-
-func getSingboxConfig() map[string]string {
-	return loadEnv(filepath.Join(stateDir, "singbox.env"))
+type SubInbound struct {
+	Protocol string
+	Remark   string
+	Port     int
+	Settings map[string]interface{}
 }
 
 func getUUID(input string) string {
@@ -149,10 +120,34 @@ func main() {
 			return
 		}
 
-		// Read configuration environments
-		h2 := getHysteria2Config()
-		mieru := getMieruConfig()
-		sb := getSingboxConfig()
+		// Read active inbounds from SQLite database
+		ibRows, err := db.Query("SELECT protocol, remark, port, settings FROM inbounds WHERE is_active=1")
+		if err != nil {
+			log.Printf("Inbounds query error: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		defer ibRows.Close()
+
+		var activeInbounds []SubInbound
+		for ibRows.Next() {
+			var proto, remark, settingsJSON string
+			var port int
+			if err := ibRows.Scan(&proto, &remark, &port, &settingsJSON); err == nil {
+				var settings map[string]interface{}
+				_ = json.Unmarshal([]byte(settingsJSON), &settings)
+				if settings == nil {
+					settings = make(map[string]interface{})
+				}
+				activeInbounds = append(activeInbounds, SubInbound{
+					Protocol: proto,
+					Remark:   remark,
+					Port:     port,
+					Settings: settings,
+				})
+			}
+		}
+
 		serverIP := getServerIP()
 
 		// Detect target format: Clash, Sing-box or Base64
@@ -166,14 +161,14 @@ func main() {
 		if isClash {
 			w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
 			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"clash-%s.yaml\"", username))
-			fmt.Fprint(w, generateClashYAML(serverIP, username, password, protocol, h2, mieru, sb))
+			fmt.Fprint(w, generateClashYAML(serverIP, username, password, protocol, activeInbounds))
 		} else if isSingbox {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"singbox-%s.json\"", username))
-			fmt.Fprint(w, generateSingboxJSON(serverIP, username, password, protocol, h2, mieru, sb))
+			fmt.Fprint(w, generateSingboxJSON(serverIP, username, password, protocol, activeInbounds))
 		} else {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			fmt.Fprint(w, generateBase64URIs(serverIP, username, password, protocol, h2, mieru, sb))
+			fmt.Fprint(w, generateBase64URIs(serverIP, username, password, protocol, activeInbounds))
 		}
 	})
 
@@ -183,56 +178,51 @@ func main() {
 	}
 }
 
-func generateClashYAML(serverIP string, username string, password string, protocol string, h2 map[string]string, mieru map[string]string, sb map[string]string) string {
+func generateClashYAML(serverIP string, username string, password string, protocol string, inbounds []SubInbound) string {
 	var proxies []string
 	var proxyNames []string
 
-	if protocol == "all" || protocol == "hysteria2" {
-		h2Port := h2["H2_PORT"]
-		h2ObfsPass := h2["H2_OBFS_PASS"]
-		h2CertCN := h2["H2_CERT_CN"]
-		h2CertPinHex := h2["H2_CERT_PIN_HEX"]
-		if h2Port != "" {
-			proxies = append(proxies, fmt.Sprintf(`  - name: Hysteria2-Proxy
+	for _, ib := range inbounds {
+		if protocol != "all" && protocol != ib.Protocol {
+			continue
+		}
+
+		switch ib.Protocol {
+		case "hysteria2":
+			obfsPassword, _ := ib.Settings["obfs_password"].(string)
+			certCN, _ := ib.Settings["cert_cn"].(string)
+			certPinHex, _ := ib.Settings["cert_pin_hex"].(string)
+			proxies = append(proxies, fmt.Sprintf(`  - name: %s
     type: hysteria2
     server: %s
-    port: %s
+    port: %d
     password: %s
     obfs: salamander
     obfs-password: %s
     sni: %s
     fingerprint: %s
-    skip-cert-verify: false`, serverIP, h2Port, password, h2ObfsPass, h2CertCN, h2CertPinHex))
-			proxyNames = append(proxyNames, "Hysteria2-Proxy")
-		}
-	}
+    skip-cert-verify: false`, ib.Remark, serverIP, ib.Port, password, obfsPassword, certCN, certPinHex))
+			proxyNames = append(proxyNames, ib.Remark)
 
-	if protocol == "all" || protocol == "mieru" {
-		mieruPort := mieru["MIERU_PORT"]
-		if mieruPort != "" {
-			proxies = append(proxies, fmt.Sprintf(`  - name: Mieru-Proxy
+		case "mieru":
+			proxies = append(proxies, fmt.Sprintf(`  - name: %s
     type: mieru
     server: %s
-    port: %s
+    port: %d
     username: %s
     password: %s
-    transport: UDP`, serverIP, mieruPort, username, password))
-			proxyNames = append(proxyNames, "Mieru-Proxy")
-		}
-	}
+    transport: UDP`, ib.Remark, serverIP, ib.Port, username, password))
+			proxyNames = append(proxyNames, ib.Remark)
 
-	// Sing-box VLESS Reality
-	if protocol == "all" || protocol == "vless" {
-		port := sb["SB_VLESS_PORT"]
-		pubKey := sb["SB_REALITY_PUB_KEY"]
-		shortId := sb["SB_REALITY_SHORT_ID"]
-		sni := sb["SB_REALITY_SNI"]
-		if port != "" && pubKey != "" {
+		case "vless":
 			uuid := getUUID(password)
-			proxies = append(proxies, fmt.Sprintf(`  - name: VLESS-Reality
+			pubKey, _ := ib.Settings["public_key"].(string)
+			shortId, _ := ib.Settings["short_id"].(string)
+			sni, _ := ib.Settings["sni"].(string)
+			proxies = append(proxies, fmt.Sprintf(`  - name: %s
     type: vless
     server: %s
-    port: %s
+    port: %d
     uuid: %s
     udp: true
     tls: true
@@ -241,39 +231,33 @@ func generateClashYAML(serverIP string, username string, password string, protoc
     reality-opts:
       public-key: %s
       short-id: %s
-    client-fingerprint: chrome`, serverIP, port, uuid, sni, pubKey, shortId))
-			proxyNames = append(proxyNames, "VLESS-Reality")
-		}
-	}
+    client-fingerprint: firefox`, ib.Remark, serverIP, ib.Port, uuid, sni, pubKey, shortId))
+			proxyNames = append(proxyNames, ib.Remark)
 
-	// Sing-box Trojan
-	if protocol == "all" || protocol == "trojan" {
-		port := sb["SB_TROJAN_PORT"]
-		if port != "" {
-			proxies = append(proxies, fmt.Sprintf(`  - name: Trojan-Proxy
+		case "trojan":
+			proxies = append(proxies, fmt.Sprintf(`  - name: %s
     type: trojan
     server: %s
-    port: %s
+    port: %d
     password: %s
     udp: true
     sni: %s
-    skip-cert-verify: true`, serverIP, port, password, serverIP))
-			proxyNames = append(proxyNames, "Trojan-Proxy")
-		}
-	}
+    skip-cert-verify: true`, ib.Remark, serverIP, ib.Port, password, serverIP))
+			proxyNames = append(proxyNames, ib.Remark)
 
-	// Sing-box Shadowsocks
-	if protocol == "all" || protocol == "shadowsocks" {
-		port := sb["SB_SS_PORT"]
-		if port != "" {
-			proxies = append(proxies, fmt.Sprintf(`  - name: Shadowsocks-Proxy
+		case "shadowsocks":
+			cipher := "aes-256-gcm"
+			if cs, ok := ib.Settings["cipher"].(string); ok && cs != "" {
+				cipher = cs
+			}
+			proxies = append(proxies, fmt.Sprintf(`  - name: %s
     type: ss
     server: %s
-    port: %s
-    cipher: aes-256-gcm
+    port: %d
+    cipher: %s
     password: %s
-    udp: true`, serverIP, port, password))
-			proxyNames = append(proxyNames, "Shadowsocks-Proxy")
+    udp: true`, ib.Remark, serverIP, ib.Port, cipher, password))
+			proxyNames = append(proxyNames, ib.Remark)
 		}
 	}
 
@@ -369,7 +353,7 @@ rules:
 	return fmt.Sprintf(template, strings.Join(proxies, "\n"), strings.Join(namesYAML, "\n"), strings.Join(namesAutoYAML, "\n"))
 }
 
-func generateSingboxJSON(serverIP string, username string, password string, protocol string, h2 map[string]string, mieru map[string]string, sb map[string]string) string {
+func generateSingboxJSON(serverIP string, username string, password string, protocol string, inbounds []SubInbound) string {
 	type ObfsConfig struct {
 		Type     string `json:"type"`
 		Password string `json:"password"`
@@ -417,78 +401,67 @@ func generateSingboxJSON(serverIP string, username string, password string, prot
 	var outbounds []Outbound
 	var selectorOutbounds []string
 
-	if protocol == "all" || protocol == "hysteria2" {
-		h2PortStr := h2["H2_PORT"]
-		h2Port, _ := strconv.Atoi(h2PortStr)
-		h2ObfsPass := h2["H2_OBFS_PASS"]
-		h2CertCN := h2["H2_CERT_CN"]
-		h2CertPinHex := h2["H2_CERT_PIN_HEX"]
+	for _, ib := range inbounds {
+		if protocol != "all" && protocol != ib.Protocol {
+			continue
+		}
 
-		if h2Port > 0 {
+		switch ib.Protocol {
+		case "hysteria2":
+			obfsPassword, _ := ib.Settings["obfs_password"].(string)
+			certCN, _ := ib.Settings["cert_cn"].(string)
+			certPinHex, _ := ib.Settings["cert_pin_hex"].(string)
 			out := Outbound{
 				Type:       "hysteria2",
-				Tag:        "Hysteria2-Proxy",
+				Tag:        ib.Remark,
 				Server:     serverIP,
-				ServerPort: h2Port,
+				ServerPort: ib.Port,
 				Password:   password,
 				Obfs: &ObfsConfig{
 					Type:     "salamander",
-					Password: h2ObfsPass,
+					Password: obfsPassword,
 				},
 				TLS: &TLSConfig{
 					Enabled:    true,
-					ServerName: h2CertCN,
+					ServerName: certCN,
 					Insecure:   false,
 				},
 			}
-			if h2CertPinHex != "" {
-				out.TLS.PinnedPeerCertSHA256 = []string{h2CertPinHex}
+			if certPinHex != "" {
+				out.TLS.PinnedPeerCertSHA256 = []string{certPinHex}
 			}
 			outbounds = append(outbounds, out)
-			selectorOutbounds = append(selectorOutbounds, "Hysteria2-Proxy")
-		}
-	}
+			selectorOutbounds = append(selectorOutbounds, ib.Remark)
 
-	if protocol == "all" || protocol == "mieru" {
-		mieruPortStr := mieru["MIERU_PORT"]
-		mieruPort, _ := strconv.Atoi(mieruPortStr)
-
-		if mieruPort > 0 {
+		case "mieru":
 			out := Outbound{
 				Type:       "mieru",
-				Tag:        "Mieru-Proxy",
+				Tag:        ib.Remark,
 				Server:     serverIP,
-				ServerPort: mieruPort,
+				ServerPort: ib.Port,
 				Username:   username,
 				Password:   password,
 				Transport:  "TCP",
 			}
 			outbounds = append(outbounds, out)
-			selectorOutbounds = append(selectorOutbounds, "Mieru-Proxy")
-		}
-	}
+			selectorOutbounds = append(selectorOutbounds, ib.Remark)
 
-	// VLESS Reality
-	if protocol == "all" || protocol == "vless" {
-		portStr := sb["SB_VLESS_PORT"]
-		port, _ := strconv.Atoi(portStr)
-		pubKey := sb["SB_REALITY_PUB_KEY"]
-		shortId := sb["SB_REALITY_SHORT_ID"]
-		sni := sb["SB_REALITY_SNI"]
-
-		if port > 0 && pubKey != "" {
+		case "vless":
+			pubKey, _ := ib.Settings["public_key"].(string)
+			shortId, _ := ib.Settings["short_id"].(string)
+			sni, _ := ib.Settings["sni"].(string)
 			out := Outbound{
 				Type:       "vless",
-				Tag:        "VLESS-Reality",
+				Tag:        ib.Remark,
 				Server:     serverIP,
-				ServerPort: port,
+				ServerPort: ib.Port,
 				UUID:       getUUID(password),
 				TLS: &TLSConfig{
 					Enabled:    true,
 					ServerName: sni,
 					UTLS: &UTLSConfig{
 						Enabled:     true,
-						Fingerprint: "chrome",
+						Fingerprint: "firefox",
 					},
 					Reality: &RealityConfig{
 						Enabled:   true,
@@ -498,21 +471,14 @@ func generateSingboxJSON(serverIP string, username string, password string, prot
 				},
 			}
 			outbounds = append(outbounds, out)
-			selectorOutbounds = append(selectorOutbounds, "VLESS-Reality")
-		}
-	}
+			selectorOutbounds = append(selectorOutbounds, ib.Remark)
 
-	// Trojan
-	if protocol == "all" || protocol == "trojan" {
-		portStr := sb["SB_TROJAN_PORT"]
-		port, _ := strconv.Atoi(portStr)
-
-		if port > 0 {
+		case "trojan":
 			out := Outbound{
 				Type:       "trojan",
-				Tag:        "Trojan-Proxy",
+				Tag:        ib.Remark,
 				Server:     serverIP,
-				ServerPort: port,
+				ServerPort: ib.Port,
 				Password:   password,
 				TLS: &TLSConfig{
 					Enabled:    true,
@@ -521,26 +487,23 @@ func generateSingboxJSON(serverIP string, username string, password string, prot
 				},
 			}
 			outbounds = append(outbounds, out)
-			selectorOutbounds = append(selectorOutbounds, "Trojan-Proxy")
-		}
-	}
+			selectorOutbounds = append(selectorOutbounds, ib.Remark)
 
-	// Shadowsocks
-	if protocol == "all" || protocol == "shadowsocks" {
-		portStr := sb["SB_SS_PORT"]
-		port, _ := strconv.Atoi(portStr)
-
-		if port > 0 {
+		case "shadowsocks":
+			cipher := "aes-256-gcm"
+			if cs, ok := ib.Settings["cipher"].(string); ok && cs != "" {
+				cipher = cs
+			}
 			out := Outbound{
 				Type:       "shadowsocks",
-				Tag:        "Shadowsocks-Proxy",
+				Tag:        ib.Remark,
 				Server:     serverIP,
-				ServerPort: port,
-				Method:     "aes-256-gcm",
+				ServerPort: ib.Port,
+				Method:     cipher,
 				Password:   password,
 			}
 			outbounds = append(outbounds, out)
-			selectorOutbounds = append(selectorOutbounds, "Shadowsocks-Proxy")
+			selectorOutbounds = append(selectorOutbounds, ib.Remark)
 		}
 	}
 
@@ -561,62 +524,51 @@ func generateSingboxJSON(serverIP string, username string, password string, prot
 	return string(bytes)
 }
 
-func generateBase64URIs(serverIP string, username string, password string, protocol string, h2 map[string]string, mieru map[string]string, sb map[string]string) string {
+func generateBase64URIs(serverIP string, username string, password string, protocol string, inbounds []SubInbound) string {
 	var uris []string
 
-	if protocol == "all" || protocol == "hysteria2" {
-		h2Port := h2["H2_PORT"]
-		h2ObfsPass := h2["H2_OBFS_PASS"]
-		h2CertCN := h2["H2_CERT_CN"]
-		h2CertPinHex := h2["H2_CERT_PIN_HEX"]
-		if h2Port != "" {
-			uri := fmt.Sprintf("hysteria2://%s@%s:%s?obfs=salamander&obfs-password=%s&sni=%s", password, serverIP, h2Port, h2ObfsPass, h2CertCN)
-			if h2CertPinHex != "" {
-				uri += "&pinSHA256=" + h2CertPinHex
+	for _, ib := range inbounds {
+		if protocol != "all" && protocol != ib.Protocol {
+			continue
+		}
+
+		switch ib.Protocol {
+		case "hysteria2":
+			obfsPassword, _ := ib.Settings["obfs_password"].(string)
+			certCN, _ := ib.Settings["cert_cn"].(string)
+			certPinHex, _ := ib.Settings["cert_pin_hex"].(string)
+			uri := fmt.Sprintf("hysteria2://%s@%s:%d?obfs=salamander&obfs-password=%s&sni=%s", password, serverIP, ib.Port, obfsPassword, certCN)
+			if certPinHex != "" {
+				uri += "&pinSHA256=" + certPinHex
 			}
-			uri += "#Hysteria2-Proxy"
+			uri += "#" + ib.Remark
 			uris = append(uris, uri)
-		}
-	}
 
-	if protocol == "all" || protocol == "mieru" {
-		mieruPort := mieru["MIERU_PORT"]
-		if mieruPort != "" {
-			uri := fmt.Sprintf("mieru://%s:%s?username=%s&password=%s&network=udp#Mieru-Proxy", serverIP, mieruPort, username, password)
+		case "mieru":
+			uri := fmt.Sprintf("mieru://%s:%d?username=%s&password=%s&network=udp#%s", serverIP, ib.Port, username, password, ib.Remark)
 			uris = append(uris, uri)
-		}
-	}
 
-	// VLESS Reality
-	if protocol == "all" || protocol == "vless" {
-		port := sb["SB_VLESS_PORT"]
-		pubKey := sb["SB_REALITY_PUB_KEY"]
-		shortId := sb["SB_REALITY_SHORT_ID"]
-		sni := sb["SB_REALITY_SNI"]
-		if port != "" && pubKey != "" {
+		case "vless":
+			pubKey, _ := ib.Settings["public_key"].(string)
+			shortId, _ := ib.Settings["short_id"].(string)
+			sni, _ := ib.Settings["sni"].(string)
 			uuid := getUUID(password)
-			uri := fmt.Sprintf("vless://%s@%s:%s?security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#VLESS-Reality",
-				uuid, serverIP, port, sni, pubKey, shortId)
+			uri := fmt.Sprintf("vless://%s@%s:%d?security=reality&sni=%s&fp=firefox&pbk=%s&sid=%s&type=tcp#%s",
+				uuid, serverIP, ib.Port, sni, pubKey, shortId, ib.Remark)
 			uris = append(uris, uri)
-		}
-	}
 
-	// Trojan
-	if protocol == "all" || protocol == "trojan" {
-		port := sb["SB_TROJAN_PORT"]
-		if port != "" {
-			uri := fmt.Sprintf("trojan://%s@%s:%s?security=tls&sni=%s&allowInsecure=1#Trojan-Proxy",
-				password, serverIP, port, serverIP)
+		case "trojan":
+			uri := fmt.Sprintf("trojan://%s@%s:%d?security=tls&sni=%s&allowInsecure=1#%s",
+				password, serverIP, ib.Port, serverIP, ib.Remark)
 			uris = append(uris, uri)
-		}
-	}
 
-	// Shadowsocks
-	if protocol == "all" || protocol == "shadowsocks" {
-		port := sb["SB_SS_PORT"]
-		if port != "" {
-			auth := base64.StdEncoding.EncodeToString([]byte("aes-256-gcm:" + password))
-			uri := fmt.Sprintf("ss://%s@%s:%s#Shadowsocks-Proxy", auth, serverIP, port)
+		case "shadowsocks":
+			cipher := "aes-256-gcm"
+			if cs, ok := ib.Settings["cipher"].(string); ok && cs != "" {
+				cipher = cs
+			}
+			auth := base64.StdEncoding.EncodeToString([]byte(cipher + ":" + password))
+			uri := fmt.Sprintf("ss://%s@%s:%d#%s", auth, serverIP, ib.Port, ib.Remark)
 			uris = append(uris, uri)
 		}
 	}

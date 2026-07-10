@@ -61,6 +61,15 @@ type User struct {
 	Pct        int    `json:"pct"`
 }
 
+type Inbound struct {
+	ID       int    `json:"id"`
+	Remark   string `json:"remark"`
+	Protocol string `json:"protocol"`
+	Port     int    `json:"port"`
+	Settings string `json:"settings"`
+	IsActive int    `json:"is_active"`
+}
+
 type TrafficHistory struct {
 	ID        int    `json:"id"`
 	Timestamp string `json:"timestamp"`
@@ -132,6 +141,7 @@ func initDB() {
 	// Migrations: ensure columns exist
 	migrateUsedTrafficBytes()
 	migrateRouteWarp()
+	migrateInbounds()
 }
 
 func migrateUsedTrafficBytes() {
@@ -430,17 +440,15 @@ func removeUserFromConf(username string, subPath string) {
 }
 
 func updateMieruUsers() {
-	mieru := getMieruConfig()
-	portStr := mieru["MIERU_PORT"]
-	if portStr == "" {
+	var port int
+	var settingsJSON string
+	err := db.QueryRow("SELECT port, settings FROM inbounds WHERE protocol='mieru' AND is_active=1 LIMIT 1").Scan(&port, &settingsJSON)
+	if err != nil {
+		_ = exec.Command("systemctl", "stop", "mita").Run()
 		return
 	}
 
-	port, _ := strconv.Atoi(portStr)
-	udpPort, _ := strconv.Atoi(mieru["MIERU_UDP_PORT"])
-	if udpPort == 0 {
-		udpPort = port
-	}
+	udpPort := port
 
 	rows, err := db.Query("SELECT username, password FROM users WHERE is_active=1 AND (protocol='all' OR protocol='mieru')")
 	if err != nil {
@@ -505,10 +513,18 @@ func updateMieruUsers() {
 }
 
 func updateHysteriaUsers() {
-	h2 := getHysteria2Config()
-	portStr := h2["H2_PORT"]
-	if portStr == "" {
+	var port int
+	var settingsJSON string
+	err := db.QueryRow("SELECT port, settings FROM inbounds WHERE protocol='hysteria2' AND is_active=1 LIMIT 1").Scan(&port, &settingsJSON)
+	if err != nil {
+		_ = exec.Command("systemctl", "stop", "hysteria-server").Run()
 		return
+	}
+
+	var settings map[string]interface{}
+	_ = json.Unmarshal([]byte(settingsJSON), &settings)
+	if settings == nil {
+		settings = make(map[string]interface{})
 	}
 
 	rows, err := db.Query("SELECT username, password, route_warp FROM users WHERE is_active=1 AND (protocol='all' OR protocol='hysteria2')")
@@ -519,7 +535,7 @@ func updateHysteriaUsers() {
 	defer rows.Close()
 
 	yamlBuilder := strings.Builder{}
-	yamlBuilder.WriteString(fmt.Sprintf("listen: :%s\n", portStr))
+	yamlBuilder.WriteString(fmt.Sprintf("listen: :%d\n", port))
 	yamlBuilder.WriteString("tls:\n  cert: /etc/hysteria/certs/server.crt\n  key:  /etc/hysteria/certs/server.key\n")
 	yamlBuilder.WriteString("auth:\n  type: userpass\n  userpass:\n")
 
@@ -538,7 +554,7 @@ func updateHysteriaUsers() {
 	}
 
 	if !hasUsers {
-		yamlBuilder.WriteString(fmt.Sprintf("    admin: %s\n", getOptString(h2, "H2_PASS", "dummy_pass")))
+		yamlBuilder.WriteString("    admin: dummy_pass\n")
 	}
 
 	// Add outbounds config
@@ -553,6 +569,7 @@ acl:
   file: /etc/hysteria/acl.txt
 `)
 
+	obfsPassword, _ := settings["obfs_password"].(string)
 	yamlBuilder.WriteString(fmt.Sprintf(`obfs:
   type: salamander
   salamander:
@@ -568,7 +585,7 @@ quic:
 stats:
   bind: 127.0.0.1:25413
   secret: hysteria_stats_secret
-`, getOptString(h2, "H2_OBFS_PASS", "")))
+`, obfsPassword))
 
 	configPath := "/etc/hysteria/config.yaml"
 	_ = os.MkdirAll(filepath.Dir(configPath), 0755)
@@ -655,6 +672,11 @@ type SBTLS struct {
 	KeyPath    string     `json:"key_path,omitempty"`
 }
 
+type SBSniff struct {
+	Enabled             bool `json:"enabled"`
+	OverrideDestination bool `json:"override_destination"`
+}
+
 type SBInbound struct {
 	Type       string   `json:"type"`
 	Tag        string   `json:"tag"`
@@ -663,6 +685,7 @@ type SBInbound struct {
 	Method     string   `json:"method,omitempty"`
 	Users      []SBUser `json:"users,omitempty"`
 	TLS        *SBTLS   `json:"tls,omitempty"`
+	Sniff      *SBSniff `json:"sniff,omitempty"`
 }
 
 type SBOutbound struct {
@@ -688,15 +711,6 @@ type SBConfig struct {
 }
 
 func updateSingboxUsers() {
-	sb := getSingboxConfig()
-	vlessPortStr := sb["SB_VLESS_PORT"]
-	if vlessPortStr == "" {
-		return
-	}
-	vlessPort, _ := strconv.Atoi(vlessPortStr)
-	trojanPort, _ := strconv.Atoi(sb["SB_TROJAN_PORT"])
-	ssPort, _ := strconv.Atoi(sb["SB_SS_PORT"])
-
 	rows, err := db.Query("SELECT username, password, protocol, route_warp FROM users WHERE is_active=1")
 	if err != nil {
 		log.Printf("Error querying users for Sing-box: %v", err)
@@ -704,82 +718,113 @@ func updateSingboxUsers() {
 	}
 	defer rows.Close()
 
-	var vlessUsers []SBUser
-	var trojanUsers []SBUser
-	var ssUsers []SBUser
+	var allUsers []User
 	var warpUsernames []string
-
 	for rows.Next() {
-		var name, pass, proto string
-		var warp int
-		if err := rows.Scan(&name, &pass, &proto, &warp); err == nil {
-			if warp == 1 {
-				warpUsernames = append(warpUsernames, name)
-			}
-			if proto == "all" || proto == "vless" {
-				vlessUsers = append(vlessUsers, SBUser{Name: name, UUID: getUUID(pass)})
-			}
-			if proto == "all" || proto == "trojan" {
-				trojanUsers = append(trojanUsers, SBUser{Name: name, Password: pass})
-			}
-			if proto == "all" || proto == "shadowsocks" {
-				ssUsers = append(ssUsers, SBUser{Name: name, Password: pass})
+		var u User
+		if err := rows.Scan(&u.Username, &u.Password, &u.Protocol, &u.RouteWarp); err == nil {
+			allUsers = append(allUsers, u)
+			if u.RouteWarp == 1 {
+				warpUsernames = append(warpUsernames, u.Username)
 			}
 		}
 	}
 
+	ibRows, err := db.Query("SELECT id, remark, protocol, port, settings FROM inbounds WHERE is_active=1 AND protocol IN ('vless', 'trojan', 'shadowsocks')")
+	if err != nil {
+		log.Printf("Error querying active inbounds for Sing-box: %v", err)
+		return
+	}
+	defer ibRows.Close()
+
 	var inbounds []SBInbound
 
-	// VLESS Reality Inbound
-	if vlessPort > 0 {
-		inbounds = append(inbounds, SBInbound{
-			Type:       "vless",
-			Tag:        "vless-in",
-			Listen:     "::",
-			ListenPort: vlessPort,
-			Users:      vlessUsers,
-			TLS: &SBTLS{
-				Enabled:    true,
-				ServerName: sb["SB_REALITY_SNI"],
-				Reality: &SBReality{
-					Enabled: true,
-					Handshake: SBRealityHandshake{
-						Server:     sb["SB_REALITY_SNI"],
-						ServerPort: 443,
-					},
-					PrivateKey: sb["SB_REALITY_PRIV_KEY"],
-					ShortId:    []string{sb["SB_REALITY_SHORT_ID"]},
-				},
-			},
-		})
-	}
+	for ibRows.Next() {
+		var id int
+		var remark, protocol, settingsJSON string
+		var port int
+		if err := ibRows.Scan(&id, &remark, &protocol, &port, &settingsJSON); err == nil {
+			var settings map[string]interface{}
+			_ = json.Unmarshal([]byte(settingsJSON), &settings)
+			if settings == nil {
+				settings = make(map[string]interface{})
+			}
 
-	// Trojan Inbound (uses self-signed cert from hysteria)
-	if trojanPort > 0 {
-		inbounds = append(inbounds, SBInbound{
-			Type:       "trojan",
-			Tag:        "trojan-in",
-			Listen:     "::",
-			ListenPort: trojanPort,
-			Users:      trojanUsers,
-			TLS: &SBTLS{
-				Enabled:  true,
-				CertPath: "/etc/hysteria/certs/server.crt",
-				KeyPath:  "/etc/hysteria/certs/server.key",
-			},
-		})
-	}
+			var sbUsers []SBUser
+			for _, u := range allUsers {
+				if u.Protocol == "all" || u.Protocol == protocol {
+					if protocol == "vless" {
+						sbUsers = append(sbUsers, SBUser{Name: u.Username, UUID: getUUID(u.Password)})
+					} else {
+						sbUsers = append(sbUsers, SBUser{Name: u.Username, Password: u.Password})
+					}
+				}
+			}
 
-	// Shadowsocks Inbound
-	if ssPort > 0 {
-		inbounds = append(inbounds, SBInbound{
-			Type:       "shadowsocks",
-			Tag:        "shadowsocks-in",
-			Listen:     "::",
-			ListenPort: ssPort,
-			Method:     "aes-256-gcm",
-			Users:      ssUsers,
-		})
+			inb := SBInbound{
+				Type:       protocol,
+				Tag:        fmt.Sprintf("%s-in-%d", protocol, id),
+				Listen:     "::",
+				ListenPort: port,
+				Users:      sbUsers,
+			}
+
+			if sniffEnabled, _ := settings["sniffing"].(bool); sniffEnabled {
+				inb.Sniff = &SBSniff{
+					Enabled:             true,
+					OverrideDestination: true,
+				}
+			}
+
+			if protocol == "vless" {
+				if settings["security"] == "reality" {
+					inb.TLS = &SBTLS{
+						Enabled:    true,
+						ServerName: fmt.Sprintf("%v", settings["sni"]),
+						Reality: &SBReality{
+							Enabled: true,
+							Handshake: SBRealityHandshake{
+								Server:     fmt.Sprintf("%v", settings["sni"]),
+								ServerPort: 443,
+							},
+							PrivateKey: fmt.Sprintf("%v", settings["private_key"]),
+							ShortId:    []string{fmt.Sprintf("%v", settings["short_id"])},
+						},
+					}
+					if dest, ok := settings["reality_dest"].(string); ok && dest != "" {
+						parts := strings.Split(dest, ":")
+						inb.TLS.Reality.Handshake.Server = parts[0]
+						if len(parts) > 1 {
+							p, _ := strconv.Atoi(parts[1])
+							if p > 0 {
+								inb.TLS.Reality.Handshake.ServerPort = p
+							}
+						}
+					}
+				}
+			} else if protocol == "trojan" {
+				certPath := "/etc/hysteria/certs/server.crt"
+				keyPath := "/etc/hysteria/certs/server.key"
+				if c, ok := settings["cert_path"].(string); ok && c != "" {
+					certPath = c
+				}
+				if k, ok := settings["key_path"].(string); ok && k != "" {
+					keyPath = k
+				}
+				inb.TLS = &SBTLS{
+					Enabled:  true,
+					CertPath: certPath,
+					KeyPath:  keyPath,
+				}
+			} else if protocol == "shadowsocks" {
+				inb.Method = "aes-256-gcm"
+				if c, ok := settings["cipher"].(string); ok && c != "" {
+					inb.Method = c
+				}
+			}
+
+			inbounds = append(inbounds, inb)
+		}
 	}
 
 	outbounds := []SBOutbound{
@@ -813,4 +858,116 @@ func updateSingboxUsers() {
 	}
 
 	_ = exec.Command("systemctl", "restart", "sing-box").Run()
+}
+
+func migrateInbounds() {
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS inbounds (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		remark TEXT NOT NULL,
+		protocol TEXT NOT NULL,
+		port INTEGER NOT NULL,
+		settings TEXT NOT NULL,
+		is_active INTEGER DEFAULT 1
+	)`)
+	if err != nil {
+		log.Printf("Warning: failed to create inbounds table: %v", err)
+		return
+	}
+
+	// Check if inbounds table is empty
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM inbounds").Scan(&count)
+	if err != nil {
+		log.Printf("Warning: failed to check inbounds count: %v", err)
+		return
+	}
+
+	if count == 0 {
+		// Populate default inbounds from existing state
+		sb := getSingboxConfig()
+		h2 := getHysteria2Config()
+		mieru := getMieruConfig()
+
+		// 1. VLESS Reality Inbound
+		vlessPortStr := sb["SB_VLESS_PORT"]
+		if vlessPortStr != "" {
+			vlessPort, _ := strconv.Atoi(vlessPortStr)
+			if vlessPort > 0 {
+				vlessSettings, _ := json.Marshal(map[string]interface{}{
+					"security":     "reality",
+					"utls":         "firefox",
+					"sni":          sb["SB_REALITY_SNI"],
+					"reality_dest": sb["SB_REALITY_SNI"] + ":443",
+					"private_key":  sb["SB_REALITY_PRIV_KEY"],
+					"public_key":   sb["SB_REALITY_PUB_KEY"],
+					"short_id":     sb["SB_REALITY_SHORT_ID"],
+					"transport":    "tcp",
+					"sniffing":     true,
+				})
+				_, _ = db.Exec("INSERT INTO inbounds (remark, protocol, port, settings, is_active) VALUES (?, ?, ?, ?, 1)",
+					"VLESS-Reality", "vless", vlessPort, string(vlessSettings))
+			}
+		}
+
+		// 2. Trojan Inbound
+		trojanPortStr := sb["SB_TROJAN_PORT"]
+		if trojanPortStr != "" {
+			trojanPort, _ := strconv.Atoi(trojanPortStr)
+			if trojanPort > 0 {
+				trojanSettings, _ := json.Marshal(map[string]interface{}{
+					"security":   "tls",
+					"cert_path":  "/etc/hysteria/certs/server.crt",
+					"key_path":   "/etc/hysteria/certs/server.key",
+					"transport":  "tcp",
+					"sniffing":   true,
+				})
+				_, _ = db.Exec("INSERT INTO inbounds (remark, protocol, port, settings, is_active) VALUES (?, ?, ?, ?, 1)",
+					"Trojan-Proxy", "trojan", trojanPort, string(trojanSettings))
+			}
+		}
+
+		// 3. Shadowsocks Inbound
+		ssPortStr := sb["SB_SS_PORT"]
+		if ssPortStr != "" {
+			ssPort, _ := strconv.Atoi(ssPortStr)
+			if ssPort > 0 {
+				ssSettings, _ := json.Marshal(map[string]interface{}{
+					"cipher":    "aes-256-gcm",
+					"transport": "tcp",
+				})
+				_, _ = db.Exec("INSERT INTO inbounds (remark, protocol, port, settings, is_active) VALUES (?, ?, ?, ?, 1)",
+					"Shadowsocks-Proxy", "shadowsocks", ssPort, string(ssSettings))
+			}
+		}
+
+		// 4. Hysteria2 Inbound
+		h2PortStr := h2["H2_PORT"]
+		if h2PortStr != "" {
+			h2Port, _ := strconv.Atoi(h2PortStr)
+			if h2Port > 0 {
+				h2Settings, _ := json.Marshal(map[string]interface{}{
+					"obfs_password": h2["H2_OBFS_PASS"],
+					"cert_cn":       h2["H2_CERT_CN"],
+					"cert_pin_hex":  h2["H2_CERT_PIN_HEX"],
+					"cert_path":     "/etc/hysteria/certs/server.crt",
+					"key_path":      "/etc/hysteria/certs/server.key",
+				})
+				_, _ = db.Exec("INSERT INTO inbounds (remark, protocol, port, settings, is_active) VALUES (?, ?, ?, ?, 1)",
+					"Hysteria2-Proxy", "hysteria2", h2Port, string(h2Settings))
+			}
+		}
+
+		// 5. Mieru Inbound
+		mieruPortStr := mieru["MIERU_PORT"]
+		if mieruPortStr != "" {
+			mieruPort, _ := strconv.Atoi(mieruPortStr)
+			if mieruPort > 0 {
+				mieruSettings, _ := json.Marshal(map[string]interface{}{
+					"transport": "udp",
+				})
+				_, _ = db.Exec("INSERT INTO inbounds (remark, protocol, port, settings, is_active) VALUES (?, ?, ?, ?, 1)",
+					"Mieru-Proxy", "mieru", mieruPort, string(mieruSettings))
+			}
+		}
+	}
 }

@@ -69,7 +69,7 @@
                         {{ end }}
                     </td>
                     <td style="white-space:nowrap;">
-                        <button class="btn btn-sm btn-accent btn-icon" onclick="showInfoModal('{{ .Username }}', '{{ .SubPath }}', '{{ .H2Uri }}', '{{ .MieruUri }}', '{{ .VlessUri }}', '{{ .TrojanUri }}', '{{ .SsUri }}')" title="Подключение"><i class="bi bi-qr-code"></i></button>
+                        <button class="btn btn-sm btn-accent btn-icon" onclick="showInfoModal('{{ .Username }}', '{{ .SubPath }}')" title="Подключение"><i class="bi bi-qr-code"></i></button>
                         <button class="btn btn-sm btn-icon" onclick="openEditUserModal({{ .ID }}, '{{ .Username }}', '{{ .ExpireDate }}', {{ .TrafficLimitGB }}, {{ .SpeedLimitMbps }}, '{{ .Protocol }}', {{ .IsActive }}, {{ .UsedTrafficBytes }}, {{ .RouteWarp }})" title="Редактировать"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-icon btn-danger" onclick="deleteUser({{ .ID }}, '{{ .Username }}')" title="Удалить"><i class="bi bi-trash3"></i></button>
                     </td>
@@ -92,71 +92,12 @@
         </div>
         <div class="modal-body" style="padding:20px;">
             <!-- Tabs -->
-            <div style="display:flex; gap:6px; border-bottom:1px solid var(--border); margin-bottom:16px; padding-bottom:8px; overflow-x:auto;">
-                <button class="btn tab-btn active" id="tabH2Btn" onclick="switchTab('H2')">Hysteria2</button>
-                <button class="btn tab-btn" id="tabMieruBtn" onclick="switchTab('Mieru')">Mieru</button>
-                <button class="btn tab-btn" id="tabVlessBtn" onclick="switchTab('Vless')">VLESS</button>
-                <button class="btn tab-btn" id="tabTrojanBtn" onclick="switchTab('Trojan')">Trojan</button>
-                <button class="btn tab-btn" id="tabSsBtn" onclick="switchTab('Ss')">Shadowsocks</button>
-                <button class="btn tab-btn" id="tabSubBtn" onclick="switchTab('Sub')">Подписка</button>
+            <!-- Dynamic Tabs Header -->
+            <div id="modalTabsHeader" style="display:flex; gap:6px; border-bottom:1px solid var(--border); margin-bottom:16px; padding-bottom:8px; overflow-x:auto;">
             </div>
             
-            <!-- Tab Content H2 -->
-            <div id="tabContentH2" class="tab-content" style="text-align:center;">
-                <div style="margin:16px auto; width:170px; height:170px; background:#fff; padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrH2"></div>
-                <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
-                    <input type="text" id="uriH2" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
-                    <button class="btn btn-accent btn-icon" onclick="copyField('uriH2')" title="Копировать"><i class="bi bi-copy"></i></button>
-                </div>
-            </div>
-            
-            <!-- Tab Content Mieru -->
-            <div id="tabContentMieru" class="tab-content" style="display:none; text-align:center;">
-                <div style="margin:16px auto; width:170px; height:170px; background:#fff; padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrMieru"></div>
-                <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
-                    <input type="text" id="uriMieru" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
-                    <button class="btn btn-accent btn-icon" onclick="copyField('uriMieru')" title="Копировать"><i class="bi bi-copy"></i></button>
-                </div>
-            </div>
-
-            <!-- Tab Content Vless -->
-            <div id="tabContentVless" class="tab-content" style="display:none; text-align:center;">
-                <div style="margin:16px auto; width:170px; height:170px; background:#fff; padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrVless"></div>
-                <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
-                    <input type="text" id="uriVless" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
-                    <button class="btn btn-accent btn-icon" onclick="copyField('uriVless')" title="Копировать"><i class="bi bi-copy"></i></button>
-                </div>
-            </div>
-
-            <!-- Tab Content Trojan -->
-            <div id="tabContentTrojan" class="tab-content" style="display:none; text-align:center;">
-                <div style="margin:16px auto; width:170px; height:170px; background:#fff; padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrTrojan"></div>
-                <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
-                    <input type="text" id="uriTrojan" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
-                    <button class="btn btn-accent btn-icon" onclick="copyField('uriTrojan')" title="Копировать"><i class="bi bi-copy"></i></button>
-                </div>
-            </div>
-
-            <!-- Tab Content Shadowsocks -->
-            <div id="tabContentSs" class="tab-content" style="display:none; text-align:center;">
-                <div style="margin:16px auto; width:170px; height:170px; background:#fff; padding:8px; border-radius:8px; display:flex; align-items:center; justify-content:center;" id="qrSs"></div>
-                <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
-                    <input type="text" id="uriSs" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
-                    <button class="btn btn-accent btn-icon" onclick="copyField('uriSs')" title="Копировать"><i class="bi bi-copy"></i></button>
-                </div>
-            </div>
-            
-            <!-- Tab Content Sub -->
-            <div id="tabContentSub" class="tab-content" style="display:none;">
-                <div style="padding:14px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border);">
-                    <p style="font-size:12.5px; color:var(--text-secondary); margin:0 0 10px 0; line-height:1.4;">
-                        Используйте эту ссылку в клиентах (Karing, Sing-box, Clash Verge) для автоматического обновления конфигураций.
-                    </p>
-                    <div style="display:flex; gap:8px; align-items:center;">
-                        <input type="text" id="subUrl" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;">
-                        <button class="btn btn-accent btn-icon" onclick="copyField('subUrl')" title="Копировать"><i class="bi bi-copy"></i></button>
-                    </div>
-                </div>
+            <!-- Dynamic Tabs Contents -->
+            <div id="modalTabsContents">
             </div>
         </div>
     </div>
@@ -272,73 +213,123 @@
 
 {{ define "scripts" }}
 <script>
-function showInfoModal(username, subPath, h2Uri, mieruUri, vlessUri, trojanUri, ssUri) {
+function showInfoModal(username, subPath) {
     document.getElementById('modalTitle').textContent = 'Подключение — ' + username;
-    
-    document.getElementById('uriH2').value = h2Uri || 'Не настроено (протокол отключен)';
-    document.getElementById('uriMieru').value = mieruUri || 'Не настроено (протокол отключен)';
-    document.getElementById('uriVless').value = vlessUri || 'Не настроено (протокол отключен)';
-    document.getElementById('uriTrojan').value = trojanUri || 'Не настроено (протокол отключен)';
-    document.getElementById('uriSs').value = ssUri || 'Не настроено (протокол отключен)';
     
     const serverIp = "{{ .ServerIP }}";
     const subUrlVal = 'http://' + serverIp + ':8080/' + subPath;
-    document.getElementById('subUrl').value = subUrlVal;
     
-    const qrH2Container = document.getElementById('qrH2');
-    const qrMieruContainer = document.getElementById('qrMieru');
-    const qrVlessContainer = document.getElementById('qrVless');
-    const qrTrojanContainer = document.getElementById('qrTrojan');
-    const qrSsContainer = document.getElementById('qrSs');
+    const header = document.getElementById('modalTabsHeader');
+    const contents = document.getElementById('modalTabsContents');
     
-    qrH2Container.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Генерация...</span>';
-    qrMieruContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Генерация...</span>';
-    qrVlessContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Генерация...</span>';
-    qrTrojanContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Генерация...</span>';
-    qrSsContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Генерация...</span>';
-    
-    if (h2Uri) {
-        fetch('/api/qr?text=' + encodeURIComponent(h2Uri))
-            .then(r => r.text())
-            .then(svg => { qrH2Container.innerHTML = svg; });
-    } else {
-        qrH2Container.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Hysteria2 отключен</span>';
-    }
-    
-    if (mieruUri) {
-        fetch('/api/qr?text=' + encodeURIComponent(mieruUri))
-            .then(r => r.text())
-            .then(svg => { qrMieruContainer.innerHTML = svg; });
-    } else {
-        qrMieruContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Mieru отключен</span>';
-    }
+    header.innerHTML = '<span style="color:var(--text-secondary); font-size:12px; padding:6px;">Загрузка подключений...</span>';
+    contents.innerHTML = '';
 
-    if (vlessUri) {
-        fetch('/api/qr?text=' + encodeURIComponent(vlessUri))
-            .then(r => r.text())
-            .then(svg => { qrVlessContainer.innerHTML = svg; });
-    } else {
-        qrVlessContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">VLESS отключен</span>';
-    }
+    fetch('/api/users/' + encodeURIComponent(username) + '/uris', {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.ok || !data.connections || data.connections.length === 0) {
+            header.innerHTML = '<span style="color:var(--text-secondary); font-size:12px; padding:6px;">Нет активных подключений</span>';
+            return;
+        }
 
-    if (trojanUri) {
-        fetch('/api/qr?text=' + encodeURIComponent(trojanUri))
-            .then(r => r.text())
-            .then(svg => { qrTrojanContainer.innerHTML = svg; });
-    } else {
-        qrTrojanContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Trojan отключен</span>';
-    }
+        header.innerHTML = '';
+        contents.innerHTML = '';
 
-    if (ssUri) {
-        fetch('/api/qr?text=' + encodeURIComponent(ssUri))
-            .then(r => r.text())
-            .then(svg => { qrSsContainer.innerHTML = svg; });
-    } else {
-        qrSsContainer.innerHTML = '<span style="color:var(--text-secondary); font-size:12px;">Shadowsocks отключен</span>';
-    }
-    
+        data.connections.forEach((conn, index) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn tab-btn' + (index === 0 ? ' active' : '');
+            btn.id = 'tabConnBtn-' + index;
+            btn.textContent = conn.remark;
+            btn.onclick = () => switchConnTab(index);
+            header.appendChild(btn);
+
+            const pane = document.createElement('div');
+            pane.id = 'tabConnContent-' + index;
+            pane.className = 'tab-content-conn';
+            pane.style.display = (index === 0 ? 'block' : 'none');
+            pane.style.textAlign = 'center';
+
+            const qrId = 'qrConn-' + index;
+            const qrDiv = document.createElement('div');
+            qrDiv.id = qrId;
+            qrDiv.style.margin = '16px auto';
+            qrDiv.style.width = '170px';
+            qrDiv.style.height = '170px';
+            qrDiv.style.background = '#fff';
+            qrDiv.style.padding = '8px';
+            qrDiv.style.borderRadius = '8px';
+            qrDiv.style.display = 'flex';
+            qrDiv.style.alignItems = 'center';
+            qrDiv.style.justifyContent = 'center';
+            qrDiv.innerHTML = '<span style="color:#666; font-size:11px;">Генерация...</span>';
+            pane.appendChild(qrDiv);
+
+            const flex = document.createElement('div');
+            flex.style.display = 'flex';
+            flex.style.gap = '8px';
+            flex.style.alignItems = 'center';
+            flex.style.marginTop = '12px';
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.id = 'uriConn-' + index;
+            input.className = 'form-control mono';
+            input.readOnly = true;
+            input.style.fontSize = '11.5px';
+            input.style.flexGrow = '1';
+            input.value = conn.uri;
+            flex.appendChild(input);
+
+            const copyBtn = document.createElement('button');
+            copyBtn.type = 'button';
+            copyBtn.className = 'btn btn-accent btn-icon';
+            copyBtn.title = 'Копировать';
+            copyBtn.innerHTML = '<i class="bi bi-copy"></i>';
+            copyBtn.onclick = () => copyField('uriConn-' + index);
+            flex.appendChild(copyBtn);
+
+            pane.appendChild(flex);
+            contents.appendChild(pane);
+
+            fetch('/api/qr?text=' + encodeURIComponent(conn.uri))
+                .then(r => r.text())
+                .then(svg => {
+                    const qrEl = document.getElementById(qrId);
+                    if (qrEl) qrEl.innerHTML = svg;
+                });
+        });
+
+        const subBtn = document.createElement('button');
+        subBtn.type = 'button';
+        subBtn.className = 'btn tab-btn';
+        subBtn.id = 'tabConnBtn-sub';
+        subBtn.textContent = 'Подписка';
+        subBtn.onclick = () => switchConnTab('sub');
+        header.appendChild(subBtn);
+
+        const subPane = document.createElement('div');
+        subPane.id = 'tabConnContent-sub';
+        subPane.className = 'tab-content-conn';
+        subPane.style.display = 'none';
+        subPane.innerHTML = `
+            <div style="padding:14px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border);">
+                <p style="font-size:12.5px; color:var(--text-secondary); margin:0 0 10px 0; line-height:1.4;">
+                    Используйте эту ссылку в клиентах (Karing, Sing-box, Clash Verge) для автоматического обновления конфигураций.
+                </p>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <input type="text" id="subUrlField" class="form-control mono" readonly style="font-size:11.5px; flex-grow:1;" value="${subUrlVal}">
+                    <button type="button" class="btn btn-accent btn-icon" onclick="copyField('subUrlField')" title="Копировать"><i class="bi bi-copy"></i></button>
+                </div>
+            </div>
+        `;
+        contents.appendChild(subPane);
+    });
+
     document.getElementById('infoModal').classList.add('active');
-    switchTab('H2');
 }
 
 function closeModal() {
@@ -351,12 +342,12 @@ document.getElementById('infoModal').addEventListener('click', function(e) {
     }
 });
 
-function switchTab(name) {
-    document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
-    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+function switchConnTab(targetId) {
+    document.querySelectorAll('.tab-content-conn').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('#modalTabsHeader .tab-btn').forEach(el => el.classList.remove('active'));
     
-    document.getElementById('tabContent' + name).style.display = 'block';
-    document.getElementById('tab' + name + 'Btn').classList.add('active');
+    document.getElementById('tabConnContent-' + targetId).style.display = 'block';
+    document.getElementById('tabConnBtn-' + targetId).classList.add('active');
 }
 
 function copyField(id) {
@@ -480,7 +471,7 @@ function quickCreateUser() {
             loadPage('/users');
             // Show Connection credentials immediately
             setTimeout(() => {
-                showInfoModal(data.username, data.sub_path, data.h2_uri, data.mieru_uri, data.vless_uri, data.trojan_uri, data.ss_uri);
+                showInfoModal(data.username, data.sub_path);
             }, 300);
         } else {
             showToast(data.msg || 'Ошибка создания', 'danger');

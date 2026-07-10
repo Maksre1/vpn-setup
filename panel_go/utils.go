@@ -556,7 +556,7 @@ func getVlessUri(config map[string]string, serverIP, password string) string {
 		return ""
 	}
 	uuid := getUUID(password)
-	return fmt.Sprintf("vless://%s@%s:%s?security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#VLESS-Reality",
+	return fmt.Sprintf("vless://%s@%s:%s?security=reality&sni=%s&fp=firefox&pbk=%s&sid=%s&type=tcp#VLESS-Reality",
 		uuid, serverIP, port, sni, pubKey, shortId)
 }
 
@@ -576,4 +576,24 @@ func getShadowsocksUri(config map[string]string, serverIP, password string) stri
 	}
 	auth := base64.StdEncoding.EncodeToString([]byte("aes-256-gcm:" + password))
 	return fmt.Sprintf("ss://%s@%s:%s#Shadowsocks-Proxy", auth, serverIP, port)
+}
+
+func generateRealityKeyPair() (string, string, error) {
+	cmd := exec.Command("/usr/local/bin/sing-box", "generate", "reality-keypair")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", "", err
+	}
+	lines := strings.Split(string(out), "\n")
+	var priv, pub string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "PrivateKey:") {
+			priv = strings.TrimSpace(strings.TrimPrefix(l, "PrivateKey:"))
+		}
+		if strings.HasPrefix(l, "PublicKey:") {
+			pub = strings.TrimSpace(strings.TrimPrefix(l, "PublicKey:"))
+		}
+	}
+	return priv, pub, nil
 }
