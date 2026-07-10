@@ -315,8 +315,27 @@ def get_all_service_statuses():
 
 def restart_service(name):
     import subprocess
+    unit_map = {
+        "Mieru (mita)": "mita",
+        "mieru": "mita",
+        "mita": "mita",
+        "Hysteria2": "hysteria-server",
+        "hysteria": "hysteria-server",
+        "hysteria-server": "hysteria-server",
+        "Cloudflare WARP": "wg-quick@wgcf-warp",
+        "warp": "wg-quick@wgcf-warp",
+        "wg-quick@wgcf-warp": "wg-quick@wgcf-warp",
+        "fail2ban": "fail2ban",
+        "VPN Panel": "vpn-panel",
+        "panel": "vpn-panel",
+        "vpn-panel": "vpn-panel",
+        "Subscription Server": "vpn-sub",
+        "sub": "vpn-sub",
+        "vpn-sub": "vpn-sub"
+    }
+    unit = unit_map.get(name, name)
     r = subprocess.run(
-        ["systemctl", "restart", name],
+        ["systemctl", "restart", unit],
         capture_output=True, text=True, timeout=30
     )
     return r.returncode == 0
