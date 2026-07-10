@@ -1,33 +1,15 @@
 {% extends "base.html" %}
-{% block title %}Логи — VPN Panel{% endblock %}
+{% block title %}Логи{% endblock %}
+{% block topbar %}Логи{% endblock %}
 {% block content %}
-<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
-    <div>
-        <h2 style="font-size:24px; font-weight:700;"><i class="bi bi-terminal" style="color:var(--accent);"></i> Логи</h2>
-    </div>
-    <div style="display:flex; gap:8px;">
-        {% for svc, name in [('mieru','Mieru'), ('hysteria','Hysteria2'), ('warp','WARP'), ('fail2ban','fail2ban'), ('panel','Panel')] %}
-        <a href="/logs?service={{ svc }}&lines={{ lines }}"
-           class="btn {{ 'btn-primary' if selected == svc else 'btn-secondary' }} btn-sm">
-            {{ name }}
-        </a>
+<div class="section-header">
+    <div style="display:flex;gap:6px;">
+        {% for svc, name in [('mieru','Mieru'),('hysteria','Hysteria2'),('warp','WARP'),('fail2ban','fail2ban'),('panel','Panel')] %}
+        <a href="/logs?service={{ svc }}&lines={{ lines }}" class="btn btn-sm {{ 'btn-accent' if selected==svc else '' }}">{{ name }}</a>
         {% endfor %}
-        <button class="btn btn-secondary btn-sm" onclick="refreshLogs()"><i class="bi bi-arrow-clockwise"></i></button>
     </div>
+    <button class="btn btn-sm" onclick="fetch('/api/logs/{{selected}}?lines={{lines}}').then(r=>r.json()).then(d=>{document.getElementById('log').textContent=d.logs})"><i class="bi bi-arrow-clockwise"></i> Обновить</button>
 </div>
-
-<div class="glass-card" style="padding:0; overflow:hidden;">
-    <div class="log-viewer" id="log-content">{{ log_text }}</div>
-</div>
-{% endblock %}
-
-{% block scripts %}
-<script>
-function refreshLogs() {
-    fetch('/api/logs/{{ selected }}?lines={{ lines }}')
-        .then(r => r.json())
-        .then(d => { document.getElementById('log-content').textContent = d.logs; });
-}
-document.getElementById('log-content').scrollTop = 99999;
-</script>
+<div class="log-box" id="log">{{ log_text }}</div>
+<script>document.getElementById('log').scrollTop=999999;</script>
 {% endblock %}

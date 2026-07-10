@@ -1,18 +1,15 @@
 {% extends "base.html" %}
-{% block title %}Пользователи — VPN Panel{% endblock %}
+{% block title %}Пользователи{% endblock %}
+{% block topbar %}Пользователи{% endblock %}
 {% block content %}
-<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
-    <div>
-        <h2 style="font-size:24px; font-weight:700;">Пользователи</h2>
-        <p style="color:var(--text-muted); font-size:14px; margin:0;">Управление VPN-аккаунтами</p>
-    </div>
-    <a href="/users/add" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Добавить</a>
+<div class="section-header">
+    <span class="section-title">Пользователи ({{ users|length }})</span>
+    <a href="/users/add" class="btn btn-accent"><i class="bi bi-plus"></i> Добавить</a>
 </div>
 
-<div class="glass-card" style="padding:0; overflow:hidden;">
-    {% if users %}
-    <div style="overflow-x:auto;">
-        <table class="table-modern">
+<div class="panel">
+    <div class="table-wrap">
+        <table class="data-table">
             <thead>
                 <tr>
                     <th>Имя</th>
@@ -22,93 +19,41 @@
                     <th>Скорость</th>
                     <th>Протокол</th>
                     <th>Статус</th>
-                    <th style="text-align:right;">Действия</th>
+                    <th></th>
                 </tr>
             </thead>
             <tbody>
-                {% for u in users %}
+            {% for u in users %}
                 <tr>
-                    <td class="user-name">{{ u.username }}</td>
-                    <td>
-                        <span class="user-pass" id="pass-{{ u.id }}">{{ u.password[:6] }}•••</span>
-                        <button class="btn btn-icon btn-secondary btn-sm" onclick="togglePass({{ u.id }}, '{{ u.password }}')" style="margin-left:6px;">
-                            <i class="bi bi-eye"></i>
-                        </button>
+                    <td style="font-weight:500;">{{ u.username }}</td>
+                    <td><code class="mono" id="pw{{ u.id }}">{{ u.password[:6] }}***</code>
+                        <button class="btn btn-sm btn-icon" onclick="var el=document.getElementById('pw{{u.id}}');el.textContent=el.textContent.includes('***')?'{{ u.password }}':'{{ u.password[:6] }}***'"><i class="bi bi-eye"></i></button>
                     </td>
-                    <td><span class="{{ 'text-danger' if u._expired else '' }}">{{ u._expire_fmt }}</span></td>
-                    <td>{{ u._traffic_fmt }}</td>
-                    <td>{{ u._speed_fmt }}</td>
+                    <td class="mono {{ 'tag-red' if u._expired else '' }}">{{ u._expire_fmt }}</td>
+                    <td class="mono">{{ u._traffic_fmt }}</td>
+                    <td class="mono">{{ u._speed_fmt }}</td>
                     <td>
-                        {% if u.protocol == 'all' %}<span class="badge badge-active">Все</span>
-                        {% elif u.protocol == 'hysteria2' %}<span class="badge" style="background:rgba(6,182,212,0.1); color:var(--info); border:1px solid rgba(6,182,212,0.2);">Hysteria2</span>
-                        {% elif u.protocol == 'mieru' %}<span class="badge" style="background:rgba(139,92,246,0.1); color:#a78bfa; border:1px solid rgba(139,92,246,0.2);">Mieru</span>
-                        {% endif %}
+                        {% if u.protocol == 'all' %}<span class="tag tag-green">all</span>
+                        {% elif u.protocol == 'hysteria2' %}<span class="tag" style="background:var(--accent-dim);color:var(--accent);">hy2</span>
+                        {% else %}<span class="tag" style="background:var(--yellow-dim);color:var(--yellow);">mieru</span>{% endif %}
                     </td>
                     <td>
-                        {% if u._expired %}<span class="badge badge-expired">истёк</span>
-                        {% elif not u.is_active %}<span class="badge badge-disabled">отключён</span>
-                        {% else %}<span class="badge badge-active">активен</span>{% endif %}
+                        {% if u._expired %}<span class="tag tag-red">истёк</span>
+                        {% elif not u.is_active %}<span class="tag tag-muted">выкл</span>
+                        {% else %}<span class="tag tag-green">активен</span>{% endif %}
                     </td>
-                    <td style="text-align:right;">
-                        <div style="display:flex; gap:6px; justify-content:flex-end;">
-                            <a href="/users/{{ u.id }}/edit" class="btn btn-icon btn-secondary btn-sm" title="Редактировать"><i class="bi bi-pencil"></i></a>
-                            <button class="btn btn-icon btn-secondary btn-sm" title="Новый пароль" onclick="resetPass({{ u.id }})"><i class="bi bi-key"></i></button>
-                            <button class="btn btn-icon btn-danger btn-sm" title="Удалить" onclick="deleteUser({{ u.id }}, '{{ u.username }}')"><i class="bi bi-trash3"></i></button>
-                        </div>
+                    <td style="white-space:nowrap;">
+                        <a href="/users/{{ u.id }}/edit" class="btn btn-sm btn-icon"><i class="bi bi-pencil"></i></a>
+                        <button class="btn btn-sm btn-icon" onclick="if(confirm('Сбросить пароль?')){fetch('/users/{{u.id}}/reset-password',{method:'POST'}).then(()=>location.reload())}"><i class="bi bi-key"></i></button>
+                        <button class="btn btn-sm btn-icon btn-danger" onclick="if(confirm('Удалить {{u.username}}?')){fetch('/users/{{u.id}}/delete',{method:'POST'}).then(()=>location.reload())}"><i class="bi bi-trash3"></i></button>
                     </td>
                 </tr>
-                {% endfor %}
+            {% endfor %}
+            {% if not users %}
+                <tr><td colspan="8" class="empty">Нет пользователей</td></tr>
+            {% endif %}
             </tbody>
         </table>
     </div>
-    {% else %}
-    <div class="empty-state">
-        <i class="bi bi-people"></i>
-        <p>Пользователей пока нет</p>
-        <a href="/users/add" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Добавить первого</a>
-    </div>
-    {% endif %}
 </div>
-
-<!-- Delete modal -->
-<div class="modal fade" id="deleteModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content" style="background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:var(--radius-lg);">
-            <div class="modal-header" style="border-color:var(--border-color);">
-                <h5 class="modal-title">Удаление</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                Удалить пользователя <strong id="delete-username"></strong>?
-            </div>
-            <div class="modal-footer" style="border-color:var(--border-color);">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
-                <form id="delete-form" method="POST"><button type="submit" class="btn btn-danger">Удалить</button></form>
-            </div>
-        </div>
-    </div>
-</div>
-{% endblock %}
-
-{% block scripts %}
-<script>
-function togglePass(id, full) {
-    const el = document.getElementById('pass-' + id);
-    el.textContent = el.textContent.includes('•••') ? full : full.substring(0, 6) + '•••';
-}
-function deleteUser(id, name) {
-    document.getElementById('delete-username').textContent = name;
-    document.getElementById('delete-form').action = '/users/' + id + '/delete';
-    new bootstrap.Modal(document.getElementById('deleteModal')).show();
-}
-function resetPass(id) {
-    if (confirm('Сбросить пароль?')) {
-        const f = document.createElement('form');
-        f.method = 'POST';
-        f.action = '/users/' + id + '/reset-password';
-        document.body.appendChild(f);
-        f.submit();
-    }
-}
-</script>
 {% endblock %}

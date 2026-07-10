@@ -1,95 +1,63 @@
 {% extends "base.html" %}
-{% block title %}Ключи — VPN Panel{% endblock %}
+{% block title %}Ключи{% endblock %}
+{% block topbar %}Ключи и ссылки{% endblock %}
 {% block content %}
-<div style="margin-bottom:24px;">
-    <h2 style="font-size:24px; font-weight:700;"><i class="bi bi-key" style="color:var(--accent);"></i> Ключи и ссылки</h2>
-</div>
-
-<div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
+<div class="grid-2" style="margin-bottom:16px;">
     <!-- Mieru -->
-    <div class="glass-card">
-        <div class="glass-card-header">
-            <div class="glass-card-title"><i class="bi bi-router"></i> Mieru</div>
+    <div class="panel">
+        <div class="panel-header">Mieru</div>
+        <div class="panel-body">
+            <div class="metric-row"><span class="metric-label">Порт TCP</span><span class="metric-value">{{ mieru.MIERU_PORT|default('?') }}</span></div>
+            <div class="metric-row"><span class="metric-label">Порт UDP</span><span class="metric-value">{{ mieru.MIERU_UDP_PORT|default('?') }}</span></div>
+            <div class="metric-row"><span class="metric-label">Пользователь</span><span class="metric-value">{{ mieru.MIERU_USER|default('?') }}</span></div>
+            <div class="metric-row"><span class="metric-label">Пароль</span><span class="metric-value mono">{{ mieru.MIERU_PASS|default('?') }}</span></div>
+            {% if mieru_uri %}
+            <div class="uri-row" style="margin-top:12px;">
+                <span class="uri-label">URI</span>
+                <span class="uri-value">{{ mieru_uri }}</span>
+                <button class="btn btn-sm" onclick="copyUri(this)"><i class="bi bi-clipboard"></i></button>
+            </div>
+            {% endif %}
         </div>
-        <div style="display:grid; gap:8px; margin-bottom:20px;">
-            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
-                <span style="color:var(--text-muted); font-size:13px;">Порт TCP</span>
-                <span style="font-weight:600; font-size:13px;">{{ mieru.MIERU_PORT|default('?') }}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
-                <span style="color:var(--text-muted); font-size:13px;">Порт UDP</span>
-                <span style="font-weight:600; font-size:13px;">{{ mieru.MIERU_UDP_PORT|default('?') }}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
-                <span style="color:var(--text-muted); font-size:13px;">Пользователь</span>
-                <span style="font-weight:600; font-size:13px;">{{ mieru.MIERU_USER|default('?') }}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; padding:8px 0;">
-                <span style="color:var(--text-muted); font-size:13px;">Пароль</span>
-                <span class="user-pass">{{ mieru.MIERU_PASS|default('?') }}</span>
-            </div>
-        </div>
-        {% if mieru_uri %}
-        <div class="uri-box">
-            <span class="uri-label">URI</span>
-            <span class="uri-value">{{ mieru_uri }}</span>
-            <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
-        </div>
-        {% endif %}
     </div>
-
     <!-- Hysteria2 -->
-    <div class="glass-card">
-        <div class="glass-card-header">
-            <div class="glass-card-title"><i class="bi bi-lightning"></i> Hysteria2</div>
+    <div class="panel">
+        <div class="panel-header">Hysteria2</div>
+        <div class="panel-body">
+            <div class="metric-row"><span class="metric-label">Порт</span><span class="metric-value">{{ h2.H2_PORT|default('?') }}</span></div>
+            <div class="metric-row"><span class="metric-label">Пароль</span><span class="metric-value mono">{{ h2.H2_PASS|default('?') }}</span></div>
+            <div class="metric-row"><span class="metric-label">OBFS</span><span class="metric-value mono">{{ h2.H2_OBFS_PASS|default('?') }}</span></div>
+            <div class="metric-row"><span class="metric-label">TLS CN</span><span class="metric-value">{{ h2.H2_CERT_CN|default('?') }}</span></div>
+            {% if h2_uri %}
+            <div class="uri-row" style="margin-top:12px;">
+                <span class="uri-label">URI</span>
+                <span class="uri-value">{{ h2_uri }}</span>
+                <button class="btn btn-sm" onclick="copyUri(this)"><i class="bi bi-clipboard"></i></button>
+            </div>
+            {% endif %}
         </div>
-        <div style="display:grid; gap:8px; margin-bottom:20px;">
-            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
-                <span style="color:var(--text-muted); font-size:13px;">Порт</span>
-                <span style="font-weight:600; font-size:13px;">{{ h2.H2_PORT|default('?') }}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
-                <span style="color:var(--text-muted); font-size:13px;">Пароль</span>
-                <span class="user-pass">{{ h2.H2_PASS|default('?') }}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-color);">
-                <span style="color:var(--text-muted); font-size:13px;">OBFS</span>
-                <span class="user-pass">{{ h2.H2_OBFS_PASS|default('?') }}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; padding:8px 0;">
-                <span style="color:var(--text-muted); font-size:13px;">TLS CN</span>
-                <span style="font-weight:600; font-size:13px;">{{ h2.H2_CERT_CN|default('?') }}</span>
-            </div>
-        </div>
-        {% if h2_uri %}
-        <div class="uri-box">
-            <span class="uri-label">URI</span>
-            <span class="uri-value">{{ h2_uri }}</span>
-            <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
-        </div>
-        {% endif %}
     </div>
 </div>
 
-<!-- Ссылки -->
-<div class="glass-card" style="margin-top:20px;">
-    <div class="glass-card-header">
-        <div class="glass-card-title"><i class="bi bi-link-45deg"></i> Ссылки для подключения</div>
-    </div>
-    <div class="uri-box">
-        <span class="uri-label">Sing-box</span>
-        <span class="uri-value">http://{{ server_ip }}:8080/singbox.json</span>
-        <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
-    </div>
-    <div class="uri-box">
-        <span class="uri-label">Clash</span>
-        <span class="uri-value">http://{{ server_ip }}:8080/{{ clash_path }}</span>
-        <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
-    </div>
-    <div class="uri-box">
-        <span class="uri-label">Подписка</span>
-        <span class="uri-value">http://{{ server_ip }}:8080/{{ sub_path }}</span>
-        <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
+<!-- Subscription links -->
+<div class="panel">
+    <div class="panel-header">Ссылки для подключения</div>
+    <div class="panel-body">
+        <div class="uri-row">
+            <span class="uri-label">Sing-box</span>
+            <span class="uri-value">http://{{ server_ip }}:8080/singbox.json</span>
+            <button class="btn btn-sm" onclick="copyUri(this)"><i class="bi bi-clipboard"></i></button>
+        </div>
+        <div class="uri-row">
+            <span class="uri-label">Clash</span>
+            <span class="uri-value">http://{{ server_ip }}:8080/{{ clash_path }}</span>
+            <button class="btn btn-sm" onclick="copyUri(this)"><i class="bi bi-clipboard"></i></button>
+        </div>
+        <div class="uri-row">
+            <span class="uri-label">Подписка</span>
+            <span class="uri-value">http://{{ server_ip }}:8080/{{ sub_path }}</span>
+            <button class="btn btn-sm" onclick="copyUri(this)"><i class="bi bi-clipboard"></i></button>
+        </div>
     </div>
 </div>
 {% endblock %}

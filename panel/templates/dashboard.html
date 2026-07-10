@@ -1,113 +1,102 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — VPN Panel{% endblock %}
+{% block title %}Обзор{% endblock %}
+{% block topbar %}Обзор{% endblock %}
 {% block content %}
-<div class="page-header" style="margin-bottom:24px;">
-    <h2 style="font-size:24px; font-weight:700;">Dashboard</h2>
-    <p style="color:var(--text-muted); font-size:14px; margin:0;">Обзор состояния VPN-сервера</p>
-</div>
 
-<!-- Статистика -->
-<div class="stat-grid">
-    <div class="stat-card" style="--card-accent: var(--gradient-3);">
-        <div class="stat-card-icon" style="background:var(--success-bg); color:var(--success);">
-            <i class="bi bi-people-fill"></i>
-        </div>
-        <div class="stat-card-value" style="color:var(--success);">{{ active }}</div>
-        <div class="stat-card-label">Активных</div>
+<!-- Stats strip -->
+<div class="stats-strip">
+    <div class="stat-cell">
+        <div class="stat-num" style="color:var(--green);">{{ active }}</div>
+        <div class="stat-label">Активных</div>
     </div>
-    <div class="stat-card" style="--card-accent: linear-gradient(135deg, #ef4444, #dc2626);">
-        <div class="stat-card-icon" style="background:var(--danger-bg); color:var(--danger);">
-            <i class="bi bi-person-x"></i>
-        </div>
-        <div class="stat-card-value" style="color:var(--danger);">{{ expired }}</div>
-        <div class="stat-card-label">Истёкших</div>
+    <div class="stat-cell">
+        <div class="stat-num" style="color:var(--red);">{{ expired }}</div>
+        <div class="stat-label">Истёкших</div>
     </div>
-    <div class="stat-card" style="--card-accent: var(--gradient-2);">
-        <div class="stat-card-icon" style="background:rgba(6,182,212,0.1); color:var(--info);">
-            <i class="bi bi-people"></i>
-        </div>
-        <div class="stat-card-value" style="color:var(--info);">{{ total }}</div>
-        <div class="stat-card-label">Всего</div>
+    <div class="stat-cell">
+        <div class="stat-num">{{ total }}</div>
+        <div class="stat-label">Всего</div>
     </div>
-    <div class="stat-card" style="--card-accent: var(--gradient-1);">
-        <div class="stat-card-icon" style="background:var(--accent-glow); color:var(--accent);">
-            <i class="bi bi-hdd-rack"></i>
-        </div>
-        <div class="stat-card-value">{{ specs.ram_mb }}</div>
-        <div class="stat-card-label">RAM (МБ)</div>
+    <div class="stat-cell">
+        <div class="stat-num">{{ specs.ram_mb }}</div>
+        <div class="stat-label">RAM, МБ</div>
+    </div>
+    <div class="stat-cell">
+        <div class="stat-num">{{ specs.cpu_cores }}</div>
+        <div class="stat-label">Ядра</div>
     </div>
 </div>
 
-<!-- Сервисы + Сервер -->
-<div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px; margin-bottom:24px;">
-    <!-- Сервисы -->
-    <div class="glass-card">
-        <div class="glass-card-header">
-            <div class="glass-card-title"><i class="bi bi-heart-pulse"></i> Сервисы</div>
-            <button class="btn btn-sm btn-secondary" onclick="location.reload()"><i class="bi bi-arrow-clockwise"></i></button>
+<!-- Main grid: services (left, wider) + server info (right) -->
+<div class="grid-2" style="grid-template-columns: 1.4fr 1fr; margin-bottom:16px;">
+
+    <!-- Services -->
+    <div class="panel">
+        <div class="panel-header">
+            Сервисы
+            <button class="btn btn-sm" onclick="refreshServices()"><i class="bi bi-arrow-clockwise"></i></button>
         </div>
-        <div class="service-grid" id="servicesGrid">
-            {% for name, active in statuses.items() %}
-            <div class="service-card">
-                <div class="service-dot {{ 'online' if active else 'offline' }}"></div>
-                <div>
-                    <div class="service-name">{{ name }}</div>
-                    <div class="service-status">{{ 'работает' if active else 'остановлен' }}</div>
-                </div>
-            </div>
+        <ul class="service-list" id="svcList">
+            {% for name, up in statuses.items() %}
+            <li class="service-item {{ 'up' if up else 'down' }}">
+                <span class="service-name">{{ name }}</span>
+                <span class="service-status {{ 'up' if up else 'down' }}">{{ 'online' if up else 'offline' }}</span>
+                <span class="service-actions">
+                    <button class="btn btn-sm btn-icon" title="Перезапуск" onclick="restartService('{{ name }}')"><i class="bi bi-arrow-repeat"></i></button>
+                </span>
+            </li>
             {% endfor %}
-        </div>
+        </ul>
     </div>
 
-    <!-- Сервер -->
-    <div class="glass-card">
-        <div class="glass-card-header">
-            <div class="glass-card-title"><i class="bi bi-pc-display"></i> Сервер</div>
-        </div>
-        <div style="display:grid; gap:12px;">
-            <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border-color);">
-                <span style="color:var(--text-muted); font-size:13px;">IP</span>
-                <span style="font-weight:600; font-size:13px;">{{ server_ip }}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border-color);">
-                <span style="color:var(--text-muted); font-size:13px;">RAM</span>
-                <span style="font-weight:600; font-size:13px;">{{ specs.ram_mb }} МБ</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border-color);">
-                <span style="color:var(--text-muted); font-size:13px;">CPU</span>
-                <span style="font-weight:600; font-size:13px;">{{ specs.cpu_cores }} ядра</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border-color);">
-                <span style="color:var(--text-muted); font-size:13px;">Ядро</span>
-                <span style="font-weight:600; font-size:13px;">{{ specs.kernel }}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; padding:10px 0;">
-                <span style="color:var(--text-muted); font-size:13px;">Uptime</span>
-                <span style="font-weight:600; font-size:13px;">{{ specs.uptime }}</span>
-            </div>
+    <!-- Server info -->
+    <div class="panel">
+        <div class="panel-header">Сервер</div>
+        <div class="panel-body">
+            <div class="metric-row"><span class="metric-label">IP</span><span class="metric-value">{{ server_ip }}</span></div>
+            <div class="metric-row"><span class="metric-label">RAM</span><span class="metric-value">{{ specs.ram_mb }} МБ</span></div>
+            <div class="metric-row"><span class="metric-label">CPU</span><span class="metric-value">{{ specs.cpu_cores }} cores</span></div>
+            <div class="metric-row"><span class="metric-label">Ядро</span><span class="metric-value">{{ specs.kernel }}</span></div>
+            <div class="metric-row"><span class="metric-label">Uptime</span><span class="metric-value">{{ specs.uptime }}</span></div>
+            <div class="metric-row"><span class="metric-label">Load</span><span class="metric-value">{{ specs.load|join(' / ') }}</span></div>
         </div>
     </div>
 </div>
 
-<!-- Быстрые ссылки -->
-<div class="glass-card">
-    <div class="glass-card-header">
-        <div class="glass-card-title"><i class="bi bi-link-45deg"></i> Ссылки для подключения</div>
-    </div>
-    <div class="uri-box">
-        <span class="uri-label">Sing-box</span>
-        <span class="uri-value">http://{{ server_ip }}:8080/singbox.json</span>
-        <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
-    </div>
-    <div class="uri-box">
-        <span class="uri-label">Clash</span>
-        <span class="uri-value">http://{{ server_ip }}:8080/{{ clash_path|default('clash.yaml') }}</span>
-        <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
-    </div>
-    <div class="uri-box">
-        <span class="uri-label">Подписка</span>
-        <span class="uri-value">http://{{ server_ip }}:8080/{{ sub_path|default('sub.txt') }}</span>
-        <button class="btn btn-sm btn-secondary uri-copy" onclick="copyText(this)"><i class="bi bi-clipboard"></i></button>
+<!-- Quick links -->
+<div class="panel">
+    <div class="panel-header">Быстрые ссылки</div>
+    <div class="panel-body">
+        <div class="uri-row">
+            <span class="uri-label">Sing-box</span>
+            <span class="uri-value">http://{{ server_ip }}:8080/singbox.json</span>
+            <button class="btn btn-sm" onclick="copyUri(this)"><i class="bi bi-clipboard"></i></button>
+        </div>
+        <div class="uri-row">
+            <span class="uri-label">Clash</span>
+            <span class="uri-value">http://{{ server_ip }}:8080/{{ clash_path|default('clash.yaml') }}</span>
+            <button class="btn btn-sm" onclick="copyUri(this)"><i class="bi bi-clipboard"></i></button>
+        </div>
+        <div class="uri-row">
+            <span class="uri-label">Подписка</span>
+            <span class="uri-value">http://{{ server_ip }}:8080/{{ sub_path|default('sub.txt') }}</span>
+            <button class="btn btn-sm" onclick="copyUri(this)"><i class="bi bi-clipboard"></i></button>
+        </div>
     </div>
 </div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function refreshServices() {
+    fetch('/api/status').then(r=>r.json()).then(()=>location.reload());
+}
+function restartService(name) {
+    const form = document.createElement('form');
+    form.method='POST'; form.action='/settings';
+    form.innerHTML='<input type="hidden" name="action" value="restart"><input type="hidden" name="service" value="'+name+'">';
+    document.body.appendChild(form); form.submit();
+}
+</script>
 {% endblock %}
