@@ -1225,8 +1225,6 @@ proxies:
     sni: ${H2_CERT_CN:-mail.example.com}
     fingerprint: ${H2_CERT_PIN_HEX:-}
     skip-cert-verify: false
-    up: "50 Mbps"
-    down: "200 Mbps"
 
   - name: Mieru
     type: mieru
