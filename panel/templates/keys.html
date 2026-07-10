@@ -7,10 +7,10 @@
     <div class="panel">
         <div class="panel-header">Mieru</div>
         <div class="panel-body">
-            <div class="metric-row"><span class="metric-label">Порт TCP</span><span class="metric-value">{{ mieru.MIERU_PORT|default('?') }}</span></div>
-            <div class="metric-row"><span class="metric-label">Порт UDP</span><span class="metric-value">{{ mieru.MIERU_UDP_PORT|default('?') }}</span></div>
-            <div class="metric-row"><span class="metric-label">Пользователь</span><span class="metric-value">{{ mieru.MIERU_USER|default('?') }}</span></div>
-            <div class="metric-row"><span class="metric-label">Пароль</span><span class="metric-value mono">{{ mieru.MIERU_PASS|default('?') }}</span></div>
+            <div class="metric-row"><span class="metric-label">Порт TCP</span><span class="metric-value">{{ mieru.MIERU_PORT|default('—', true) }}</span></div>
+            <div class="metric-row"><span class="metric-label">Порт UDP</span><span class="metric-value">{{ mieru.MIERU_UDP_PORT|default('—', true) }}</span></div>
+            <div class="metric-row"><span class="metric-label">Пользователь</span><span class="metric-value">{{ mieru.MIERU_USER|default('—', true) }}</span></div>
+            <div class="metric-row"><span class="metric-label">Пароль</span><span class="metric-value mono">{{ mieru.MIERU_PASS|default('—', true) }}</span></div>
             {% if mieru_uri %}
             <div class="uri-row" style="margin-top:12px;">
                 <span class="uri-label">URI</span>
@@ -24,10 +24,10 @@
     <div class="panel">
         <div class="panel-header">Hysteria2</div>
         <div class="panel-body">
-            <div class="metric-row"><span class="metric-label">Порт</span><span class="metric-value">{{ h2.H2_PORT|default('?') }}</span></div>
-            <div class="metric-row"><span class="metric-label">Пароль</span><span class="metric-value mono">{{ h2.H2_PASS|default('?') }}</span></div>
-            <div class="metric-row"><span class="metric-label">OBFS</span><span class="metric-value mono">{{ h2.H2_OBFS_PASS|default('?') }}</span></div>
-            <div class="metric-row"><span class="metric-label">TLS CN</span><span class="metric-value">{{ h2.H2_CERT_CN|default('?') }}</span></div>
+            <div class="metric-row"><span class="metric-label">Порт</span><span class="metric-value">{{ h2.H2_PORT|default('—', true) }}</span></div>
+            <div class="metric-row"><span class="metric-label">Пароль</span><span class="metric-value mono">{{ h2.H2_PASS|default('—', true) }}</span></div>
+            <div class="metric-row"><span class="metric-label">OBFS</span><span class="metric-value mono">{{ h2.H2_OBFS_PASS|default('—', true) }}</span></div>
+            <div class="metric-row"><span class="metric-label">TLS CN</span><span class="metric-value">{{ h2.H2_CERT_CN|default('—', true) }}</span></div>
             {% if h2_uri %}
             <div class="uri-row" style="margin-top:12px;">
                 <span class="uri-label">URI</span>
@@ -50,12 +50,12 @@
         </div>
         <div class="uri-row">
             <span class="uri-label">Clash</span>
-            <span class="uri-value">http://{{ server_ip }}:8080/{{ clash_path }}</span>
+            <span class="uri-value">http://{{ server_ip }}:8080/{{ clash_path|default('clash.yaml') }}</span>
             <button class="btn btn-sm" onclick="copyUri(this)"><i class="bi bi-clipboard"></i></button>
         </div>
         <div class="uri-row">
             <span class="uri-label">Подписка</span>
-            <span class="uri-value">http://{{ server_ip }}:8080/{{ sub_path }}</span>
+            <span class="uri-value">http://{{ server_ip }}:8080/{{ sub_path|default('sub.txt') }}</span>
             <button class="btn btn-sm" onclick="copyUri(this)"><i class="bi bi-clipboard"></i></button>
         </div>
     </div>

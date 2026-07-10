@@ -7,7 +7,7 @@
 <div class="grid-2" style="grid-template-columns: 2fr 1fr; margin-bottom:16px;">
     <!-- Hero Traffic Chart -->
     <div class="panel" style="display: flex; flex-direction: column;">
-        <div class="panel-header">Трафик за последние 24 часа</div>
+        <div class="panel-header">Трафик за последние 24 часа (UTC)</div>
         <div class="panel-body" style="flex-grow: 1; position: relative; min-height: 180px; padding: 12px 16px 8px 8px;">
             <canvas id="trafficChart"></canvas>
         </div>
@@ -79,7 +79,7 @@
 
 <!-- Quick links -->
 <div class="panel">
-    <div class="panel-header">Быстрые ссылки</div>
+    <div class="panel-header">Ссылки для подключения</div>
     <div class="panel-body">
         <div class="uri-row">
             <span class="uri-label">Sing-box</span>
@@ -129,6 +129,9 @@ function updateServicesUI(statuses) {
 }
 
 function restartService(name) {
+    if (!confirm('Вы уверены, что хотите перезапустить ' + name + '? Это временно прервет активные VPN-подключения.')) {
+        return;
+    }
     showToast('Перезапуск ' + name + '...', 'warning');
     
     fetch('/api/restart', {
