@@ -394,8 +394,16 @@ body {
     box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
 }
 select.form-control {
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    appearance: none !important;
     color: var(--text) !important;
     background-color: var(--bg-input) !important;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%2398989d' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3E%3C/svg%3E") !important;
+    background-repeat: no-repeat !important;
+    background-position: right 12px center !important;
+    background-size: 12px !important;
+    padding-right: 36px !important;
     padding-top: 0 !important;
     padding-bottom: 0 !important;
     height: 35px !important;
