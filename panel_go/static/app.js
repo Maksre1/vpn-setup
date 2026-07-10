@@ -72,12 +72,12 @@ function loadPage(url) {
         
         // 6. Execute scripts in the loaded content
         if (mainContent) {
-            const scripts = mainContent.querySelectorAll('script');
+            const scripts = doc.querySelectorAll('script');
             scripts.forEach(oldScript => {
                 const newScript = document.createElement('script');
                 Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
                 newScript.appendChild(document.createTextNode(oldScript.innerHTML));
-                oldScript.parentNode.replaceChild(newScript, oldScript);
+                mainContent.appendChild(newScript);
             });
         }
         
@@ -120,12 +120,12 @@ window.addEventListener('popstate', function() {
         });
         
         if (mainContent) {
-            const scripts = mainContent.querySelectorAll('script');
+            const scripts = doc.querySelectorAll('script');
             scripts.forEach(oldScript => {
                 const newScript = document.createElement('script');
                 Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
                 newScript.appendChild(document.createTextNode(oldScript.innerHTML));
-                oldScript.parentNode.replaceChild(newScript, oldScript);
+                mainContent.appendChild(newScript);
             });
         }
     });
