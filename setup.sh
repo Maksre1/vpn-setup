@@ -631,7 +631,18 @@ install_hysteria2() {
     H2_OBFS_PASS=$(openssl rand -base64 22 | tr -d '/+=' | head -c 24)
 
     mkdir -p "$H2_CERT_DIR"
-    local cn_candidates=("mail.example.com" "cdn.example.net" "api.example.org")
+    local cn_candidates=(
+        "mail.google.com" "cdn.cloudflare.com" "api.github.com"
+        "static.twitchcdn.net" "images.unsplash.com" "assets.adobe.com"
+        "fonts.googleapis.com" "cdn.jsdelivr.net" "polyfill.io"
+        "ajax.cloudflare.com" "www.microsoft.com" "dl.google.com"
+        "redirector.googlevideo.com" "rr5---sn-ab5sznly.googlevideo.com"
+        "manifest.googlevideo.com" "play.googleapis.com"
+        "graph.facebook.com" "scontent.xx.fbcdn.net"
+        "api.twitter.com" "pbs.twimg.com"
+        "store.steampowered.com" "cdn.akamai.steamstatic.com"
+        "static.cdnirk.ru" "cdn.jsdelivr.net"
+    )
     local cn_index=$(( RANDOM % ${#cn_candidates[@]} ))
     H2_CERT_CN="${cn_candidates[$cn_index]}"
 
