@@ -1118,7 +1118,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=vpnsub
+User=root
 WorkingDirectory=/var/www/html
 ExecStart=${panel_dir}/vpn-sub
 Restart=always
