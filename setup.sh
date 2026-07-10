@@ -1939,7 +1939,15 @@ setup_panel() {
 
     # Установка зависимостей
     if ! python3 -c "import flask" 2>/dev/null; then
-        pip3 install --break-system-packages flask flask-wtf 2>&1 | tail -3
+        # Убедимся что pip3 установлен
+        if ! command -v pip3 &>/dev/null; then
+            if [[ "$PKG_MANAGER" == "apt" ]]; then
+                apt-get install -y -qq python3-pip 2>&1 | tail -2
+            elif [[ "$PKG_MANAGER" == "dnf" ]]; then
+                dnf install -y -q python3-pip 2>&1 | tail -2
+            fi
+        fi
+        pip3 install --break-system-packages flask flask-wtf 2>&1 | tail -3 || \
         pip3 install flask flask-wtf 2>&1 | tail -3 || true
     fi
 
