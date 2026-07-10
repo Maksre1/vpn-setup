@@ -1188,6 +1188,7 @@ setup_subscription_server() {
     chmod 755 /var/www/html || true
 
     local panel_dir="/opt/vpn-panel"
+    mkdir -p "${panel_dir}"
     systemctl stop vpn-sub 2>/dev/null || true
 
     # Удаление старого скрипта python
