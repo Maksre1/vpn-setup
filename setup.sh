@@ -851,12 +851,13 @@ setup_warp() {
     sed -i '/^PostUp/d'   "$wg_conf_dst"
     sed -i '/^PostDown/d' "$wg_conf_dst"
 
-    log_step "Поднятие интерфейса wgcf-warp (wg-quick up)..."
-    if wg show wgcf-warp &>/dev/null; then
-        log_ok "wgcf-warp уже работает"
+    log_step "Поднятие интерфейса wgcf-warp (systemd)..."
+    systemctl enable "wg-quick@wgcf-warp" >> "$LOG_FILE" 2>&1 || true
+    if systemctl restart "wg-quick@wgcf-warp" >> "$LOG_FILE" 2>&1 || systemctl start "wg-quick@wgcf-warp" >> "$LOG_FILE" 2>&1; then
+        log_ok "wgcf-warp поднят"
     else
-        if wg-quick up wgcf-warp >> "$LOG_FILE" 2>&1; then
-            log_ok "wgcf-warp поднят"
+        if wg show wgcf-warp &>/dev/null; then
+            log_ok "wgcf-warp уже запущен"
         else
             log_fail "Не удалось поднять wgcf-warp. Возможна LXC/OpenVZ виртуализация без поддержки WireGuard."
             log_info "Пропуск настройки WARP. VPN будет работать напрямую без WARP."
@@ -864,8 +865,6 @@ setup_warp() {
             return 0
         fi
     fi
-
-    systemctl enable "wg-quick@wgcf-warp" >> "$LOG_FILE" 2>&1 || true
 
     log_step "Настройка сплит-маршрутизации (таблица 200, mark 0x1)..."
     mkdir -p /etc/iproute2
