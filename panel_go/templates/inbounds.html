@@ -365,6 +365,10 @@ input:checked + .slider:before {
 {{ end }}
 {{ define "scripts" }}
 <script>
+window.onerror = function(msg, url, line) {
+    alert("JS ERROR:\n" + msg + "\nLine: " + line + "\nURL: " + url);
+    return false;
+};
 // JSON parsing pretty helper for description
 document.querySelectorAll('[id^="inbound-desc-"]').forEach(el => {
     try {
