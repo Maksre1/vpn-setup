@@ -472,6 +472,12 @@ func updateMieruUsers() {
 	}
 
 	udpPort := port
+	mieruConf := getMieruConfig()
+	if udpPortStr, ok := mieruConf["MIERU_UDP_PORT"]; ok && udpPortStr != "" {
+		if uPort, err := strconv.Atoi(udpPortStr); err == nil && uPort > 0 {
+			udpPort = uPort
+		}
+	}
 
 	rows, err := db.Query("SELECT username, password FROM users WHERE is_active=1 AND (protocol='all' OR protocol='mieru')")
 	if err != nil {
