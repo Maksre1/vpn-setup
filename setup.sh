@@ -1564,7 +1564,7 @@ do_remove_user() {
         source "$STATE_DIR/mieru.env"
         local users_json=""
         if [[ -s "$users_file" ]]; then
-            while IFS='|' read -r uname upass; do
+            while IFS='|' read -r uname upass _rest; do
                 [[ -n "$uname" ]] && users_json+="{\"name\":\"${uname}\",\"password\":\"${upass}\"},"
             done < "$users_file"
             users_json="[${users_json%,}]"
@@ -1589,6 +1589,263 @@ EOF
     fi
 
     printf "  ${GREEN}✔${NC}  Пользователь '%s' удалён.\n\n" "$username"
+}
+
+# =============================================================================
+# SHOW KEYS — вывод всех ключей и ссылок
+# =============================================================================
+do_show_keys() {
+    printf "\n  ${BOLD}${CYAN}VPN Server — Мои ключи${NC}\n"
+    printf "  %s\n\n" "──────────────────────────────────────────────────────────"
+
+    local server_ip
+    server_ip=$(get_server_ip)
+
+    # Загружаем конфиги
+    if [[ -f "$STATE_DIR/mieru.env" ]]; then source "$STATE_DIR/mieru.env"; fi
+    if [[ -f "$STATE_DIR/hysteria2.env" ]]; then source "$STATE_DIR/hysteria2.env"; fi
+    if [[ -f "$STATE_DIR/subscription_path" ]]; then source "$STATE_DIR/subscription_path"; fi
+
+    # Ссылки
+    printf "  ${BOLD}Ссылки для подключения:${NC}\n\n"
+    printf "  ${CYAN}Karing / Sing-box:${NC}\n"
+    printf "  → http://%s:8080/singbox.json\n\n" "$server_ip"
+    printf "  ${CYAN}Clash Verge / Mihomo:${NC}\n"
+    printf "  → http://%s:8080/%s\n\n" "$server_ip" "${CLASH_PATH:-clash.yaml}"
+    printf "  ${CYAN}V2Ray (единая подписка):${NC}\n"
+    printf "  → http://%s:8080/%s\n\n" "$server_ip" "${SUB_PATH:-sub.txt}"
+
+    # Ключи
+    printf "  ${BOLD}Ключи:${NC}\n\n"
+    if [[ -n "${MIERU_URI:-}" ]]; then
+        printf "  ${CYAN}Mieru:${NC}  порт %s (TCP) / %s (UDP)\n" "${MIERU_PORT:-?}" "${MIERU_UDP_PORT:-?}"
+        printf "  URI: %s\n\n" "$MIERU_URI"
+    fi
+    if [[ -n "${H2_URI:-}" ]]; then
+        printf "  ${CYAN}Hysteria2:${NC} порт %s (UDP)\n" "${H2_PORT:-?}"
+        printf "  URI: %s\n\n" "$H2_URI"
+    fi
+
+    # Пользователи
+    local users_file="$STATE_DIR/vpn-users.conf"
+    if [[ -f "$users_file" ]] && [[ -s "$users_file" ]]; then
+        printf "  ${BOLD}Пользователи:${NC}\n\n"
+        printf "  ${BOLD}%-15s %-12s %-12s %-10s %-10s${NC}\n" "Имя" "Срок" "Трафик" "Скорость" "Протокол"
+        printf "  %s\n" "──────────────────────────────────────────────────────────"
+        while IFS='|' -r read -r uname upass uexpire utraffic uspeed uproto; do
+            [[ -z "$uname" ]] && continue
+            local expire_display="${uexpire:-бессрочно}"
+            local traffic_display="${utraffic:-безлимит}"
+            local speed_display="${uspeed:-безлимит}"
+            local proto_display="${uproto:-all}"
+            # Проверяем срок действия
+            if [[ "$expire_display" != "never" && "$expire_display" != "бессрочно" ]]; then
+                local expire_epoch
+                expire_epoch=$(date -d "$expire_display" +%s 2>/dev/null || echo 0)
+                local now_epoch
+                now_epoch=$(date +%s)
+                if [[ "$expire_epoch" -gt 0 && "$expire_epoch" -lt "$now_epoch" ]]; then
+                    expire_display="${RED}истёк${NC}"
+                fi
+            fi
+            printf "  %-15s %-22b %-12s %-10s %-10s\n" "$uname" "$expire_display" "$traffic_display" "$speed_display" "$proto_display"
+        done < "$users_file"
+        printf "\n"
+    fi
+
+    # Полный файл с креденциалами
+    printf "  ${BOLD}Полные креденциалы:${NC} %s\n\n" "$INFO_FILE"
+}
+
+# =============================================================================
+# INTERACTIVE MENU
+# =============================================================================
+show_banner() {
+    clear
+    printf "\n"
+    printf "  ${BOLD}${CYAN}╔══════════════════════════════════════════════════════╗${NC}\n"
+    printf "  ${BOLD}${CYAN}║${NC}         ${BOLD}VPN Server Auto-Setup${NC}                        ${BOLD}${CYAN}║${NC}\n"
+    printf "  ${BOLD}${CYAN}║${NC}  Mieru + Hysteria2 + Cloudflare WARP                ${BOLD}${CYAN}║${NC}\n"
+    printf "  ${BOLD}${CYAN}╚══════════════════════════════════════════════════════╝${NC}\n"
+    printf "\n"
+    printf "  ${BOLD}Описание:${NC}\n"
+    printf "  Автоматическая настройка VPN-сервера на VPS.\n"
+    printf "  Поддержка Mieru (TCP/UDP) и Hysteria2 (QUIC).\n"
+    printf "  Сплит-маршрутизация через Cloudflare WARP.\n"
+    printf "  Автоматическая оптимизация сетевого стека.\n"
+    printf "\n"
+}
+
+show_menu() {
+    printf "  ${BOLD}Выберите действие:${NC}\n\n"
+    printf "  ${CYAN}1${NC})  Запустить настройку\n"
+    printf "  ${CYAN}2${NC})  Мои ключи\n"
+    printf "  ${CYAN}3${NC})  Добавить пользователя\n"
+    printf "  ${CYAN}4${NC})  Удалить пользователя\n"
+    printf "  ${CYAN}5${NC})  Статус сервера\n"
+    printf "  ${CYAN}6${NC})  Удалить VPN-сервер\n"
+    printf "  ${CYAN}0${NC})  Выход\n"
+    printf "\n"
+    printf "  ${BOLD}Ваш выбор [0-6]: ${NC}"
+}
+
+# =============================================================================
+# ADD USER — интерактивное добавление с лимитами
+# =============================================================================
+do_add_user_interactive() {
+    printf "\n  ${BOLD}${CYAN}Добавление пользователя${NC}\n"
+    printf "  %s\n\n" "──────────────────────────────────────────────────────────"
+
+    # Имя
+    read -rp "  Имя пользователя: " username
+    if [[ -z "$username" ]]; then
+        printf "  ${RED}✗${NC}  Имя не может быть пустым.\n\n"
+        return 1
+    fi
+
+    local users_file="$STATE_DIR/vpn-users.conf"
+    mkdir -p "$STATE_DIR"
+    if grep -q "^${username}|" "$users_file" 2>/dev/null; then
+        printf "  ${YELLOW}!${NC}  Пользователь '%s' уже существует.\n\n" "$username"
+        return 0
+    fi
+
+    local password
+    password=$(openssl rand -base64 22 | tr -d '/+=' | head -c 24)
+
+    # Срок действия
+    printf "\n  ${BOLD}Срок действия:${NC}\n"
+    printf "  ${CYAN}0${NC})  Бессрочно\n"
+    printf "  ${CYAN}1${NC})  7 дней\n"
+    printf "  ${CYAN}2${NC})  30 дней\n"
+    printf "  ${CYAN}3${NC})  90 дней\n"
+    printf "  ${CYAN}4${NC})  365 дней\n"
+    printf "  ${CYAN}5${NC})  Своя дата (YYYY-MM-DD)\n"
+    read -rp "  Выбор [0-5, по умолчанию 0]: " expire_choice
+    expire_choice="${expire_choice:-0}"
+
+    local expire_date="never"
+    local expire_display="бессрочно"
+    case "$expire_choice" in
+        1) expire_date=$(date -d "+7 days" +%Y-%m-%d 2>/dev/null || date -v+7d +%Y-%m-%d 2>/dev/null); expire_display="7 дней" ;;
+        2) expire_date=$(date -d "+30 days" +%Y-%m-%d 2>/dev/null || date -v+30d +%Y-%m-%d 2>/dev/null); expire_display="30 дней" ;;
+        3) expire_date=$(date -d "+90 days" +%Y-%m-%d 2>/dev/null || date -v+90d +%Y-%m-%d 2>/dev/null); expire_display="90 дней" ;;
+        4) expire_date=$(date -d "+365 days" +%Y-%m-%d 2>/dev/null || date -v+365d +%Y-%m-%d 2>/dev/null); expire_display="365 дней" ;;
+        5) read -rp "  Дата окончания (YYYY-MM-DD): " expire_date
+           expire_display="$expire_date" ;;
+        *) expire_date="never"; expire_display="бессрочно" ;;
+    esac
+
+    # Лимит трафика
+    printf "\n  ${BOLD}Лимит трафика:${NC}\n"
+    printf "  ${CYAN}0${NC})  Безлимит\n"
+    printf "  ${CYAN}1${NC})  10 ГБ\n"
+    printf "  ${CYAN}2${NC})  50 ГБ\n"
+    printf "  ${CYAN}3${NC})  100 ГБ\n"
+    printf "  ${CYAN}4${NC})  500 ГБ\n"
+    printf "  ${CYAN}5${NC})  Свой объём (ГБ)\n"
+    read -rp "  Выбор [0-5, по умолчанию 0]: " traffic_choice
+    traffic_choice="${traffic_choice:-0}"
+
+    local traffic_limit="unlimited"
+    local traffic_display="безлимит"
+    case "$traffic_choice" in
+        1) traffic_limit="10"; traffic_display="10 ГБ" ;;
+        2) traffic_limit="50"; traffic_display="50 ГБ" ;;
+        3) traffic_limit="100"; traffic_display="100 ГБ" ;;
+        4) traffic_limit="500"; traffic_display="500 ГБ" ;;
+        5) read -rp "  Объём (ГБ): " traffic_limit; traffic_display="${traffic_limit} ГБ" ;;
+        *) traffic_limit="unlimited"; traffic_display="безлимит" ;;
+    esac
+
+    # Лимит скорости
+    printf "\n  ${BOLD}Лимит скорости:${NC}\n"
+    printf "  ${CYAN}0${NC})  Безлимит\n"
+    printf "  ${CYAN}1${NC})  10 Мбит/с\n"
+    printf "  ${CYAN}2${NC})  50 Мбит/с\n"
+    printf "  ${CYAN}3${NC})  100 Мбит/с\n"
+    printf "  ${CYAN}4${NC})  Своя скорость (Мбит/с)\n"
+    read -rp "  Выбор [0-4, по умолчанию 0]: " speed_choice
+    speed_choice="${speed_choice:-0}"
+
+    local speed_limit="unlimited"
+    local speed_display="безлимит"
+    case "$speed_choice" in
+        1) speed_limit="10"; speed_display="10 Мбит/с" ;;
+        2) speed_limit="50"; speed_display="50 Мбит/с" ;;
+        3) speed_limit="100"; speed_display="100 Мбит/с" ;;
+        4) read -rp "  Скорость (Мбит/с): " speed_limit; speed_display="${speed_limit} Мбит/с" ;;
+        *) speed_limit="unlimited"; speed_display="безлимит" ;;
+    esac
+
+    # Протокол
+    printf "\n  ${BOLD}Протокол:${NC}\n"
+    printf "  ${CYAN}0${NC})  Все (Hysteria2 + Mieru)\n"
+    printf "  ${CYAN}1${NC})  Только Hysteria2\n"
+    printf "  ${CYAN}2${NC})  Только Mieru\n"
+    read -rp "  Выбор [0-2, по умолчанию 0]: " proto_choice
+    proto_choice="${proto_choice:-0}"
+
+    local proto_limit="all"
+    local proto_display="все"
+    case "$proto_choice" in
+        1) proto_limit="hysteria2"; proto_display="Hysteria2" ;;
+        2) proto_limit="mieru"; proto_display="Mieru" ;;
+        *) proto_limit="all"; proto_display="все" ;;
+    esac
+
+    # Сохраняем пользователя
+    echo "${username}|${password}|${expire_date}|${traffic_limit}|${speed_limit}|${proto_limit}" >> "$users_file"
+    chmod 600 "$users_file"
+
+    # Обновляем конфиг Mieru (добавляем пользователя)
+    if [[ -f "$STATE_DIR/mieru.env" ]]; then
+        source "$STATE_DIR/mieru.env"
+        local users_json=""
+        while IFS='|' read -r uname upass _rest; do
+            [[ -n "$uname" ]] && users_json+="{\"name\":\"${uname}\",\"password\":\"${upass}\"},"
+        done < "$users_file"
+        users_json="[${users_json%,}]"
+
+        cat > /tmp/mita_users_config.json <<EOF
+{
+    "portBindings": [
+        {"port": ${MIERU_PORT}, "protocol": "TCP"},
+        {"port": ${MIERU_UDP_PORT}, "protocol": "UDP"}
+    ],
+    "users": ${users_json},
+    "loggingLevel": "WARN",
+    "mtu": 1400
+}
+EOF
+        mita apply config /tmp/mita_users_config.json 2>/dev/null || true
+        rm -f /tmp/mita_users_config.json
+        systemctl restart mita 2>/dev/null || true
+    fi
+
+    # Генерируем ссылки для пользователя
+    local sub_content=""
+    if [[ "$proto_limit" == "all" || "$proto_limit" == "hysteria2" ]]; then
+        [[ -n "${H2_URI:-}" ]] && sub_content+="${H2_URI}"$'\n'
+    fi
+    if [[ "$proto_limit" == "all" || "$proto_limit" == "mieru" ]]; then
+        [[ -n "${MIERU_URI:-}" ]] && sub_content+="${MIERU_URI}"$'\n'
+    fi
+    local sub_base64
+    sub_base64=$(echo -n "$sub_content" | base64 | tr -d '\r\n')
+    local user_sub_path="sub-${username}-$(openssl rand -hex 4).txt"
+    echo -n "$sub_base64" > "/var/www/html/${user_sub_path}"
+    chmod 644 "/var/www/html/${user_sub_path}"
+
+    printf "\n  ${GREEN}✔${NC}  Пользователь '${BOLD}%s${NC}' создан.\n\n" "$username"
+    printf "  ${BOLD}Пароль:${NC}        %s\n" "$password"
+    printf "  ${BOLD}Срок:${NC}          %s\n" "$expire_display"
+    printf "  ${BOLD}Трафик:${NC}        %s\n" "$traffic_display"
+    printf "  ${BOLD}Скорость:${NC}      %s\n" "$speed_display"
+    printf "  ${BOLD}Протокол:${NC}      %s\n" "$proto_display"
+    printf "\n"
+    printf "  ${BOLD}Ссылка для клиента:${NC}\n"
+    printf "  → http://%s:8080/%s\n\n" "$(get_server_ip)" "$user_sub_path"
 }
 
 # =============================================================================
@@ -1654,7 +1911,7 @@ EOF
 # MAIN — точка входа
 # =============================================================================
 main() {
-    # Обработка аргументов командной строки
+    # Обработка аргументов командной строки (совместимость со старым форматом)
     case "${1:-}" in
         --uninstall)
             check_root
@@ -1675,24 +1932,101 @@ main() {
             do_remove_user "${2:-}"
             exit 0
             ;;
+        --keys)
+            do_show_keys
+            exit 0
+            ;;
+        --setup)
+            init_log
+            check_root
+            check_os
+            setup_dns
+            sync_time
+            update_system
+            setup_firewall
+            detect_system_specs
+            tune_network
+            install_mieru
+            install_hysteria2
+            setup_warp
+            setup_subscription_server
+            setup_fail2ban
+            print_summary
+            exit 0
+            ;;
     esac
 
-    init_log
+    # Интерактивное меню
     check_root
-    check_os
+    show_banner
 
-    setup_dns
-    sync_time
-    update_system
-    setup_firewall
-    detect_system_specs
-    tune_network
-    install_mieru
-    install_hysteria2
-    setup_warp
-    setup_subscription_server
-    setup_fail2ban
-    print_summary
+    while true; do
+        show_menu
+        read -r choice
+        case "$choice" in
+            1)
+                check_os
+                setup_dns
+                sync_time
+                update_system
+                setup_firewall
+                detect_system_specs
+                tune_network
+                install_mieru
+                install_hysteria2
+                setup_warp
+                setup_subscription_server
+                setup_fail2ban
+                print_summary
+                printf "\n  Нажмите Enter для возврата в меню..."
+                read -r
+                show_banner
+                ;;
+            2)
+                do_show_keys
+                printf "\n  Нажмите Enter для возврата в меню..."
+                read -r
+                show_banner
+                ;;
+            3)
+                do_add_user_interactive
+                printf "\n  Нажмите Enter для возврата в меню..."
+                read -r
+                show_banner
+                ;;
+            4)
+                read -rp "  Имя пользователя для удаления: " del_user
+                do_remove_user "$del_user"
+                printf "\n  Нажмите Enter для возврата в меню..."
+                read -r
+                show_banner
+                ;;
+            5)
+                do_status
+                printf "\n  Нажмите Enter для возврата в меню..."
+                read -r
+                show_banner
+                ;;
+            6)
+                printf "\n  ${RED}Вы уверены? Это удалит всё! (yes/no): ${NC}"
+                read -r confirm
+                if [[ "$confirm" == "yes" ]]; then
+                    do_uninstall
+                    exit 0
+                fi
+                show_banner
+                ;;
+            0|q|Q)
+                printf "\n  ${GREEN}До свидания!${NC}\n\n"
+                exit 0
+                ;;
+            *)
+                printf "  ${RED}Неверный выбор.${NC}\n\n"
+                sleep 1
+                show_banner
+                ;;
+        esac
+    done
 }
 
 main "$@"
