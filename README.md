@@ -1,22 +1,21 @@
-# VPS VPN Setup: Mieru + Hysteria 2 + Cloudflare WARP
+# VPS VPN Setup: Mieru + Hysteria 2 + Xray + NaiveProxy + Cloudflare WARP
 
-Автоматический скрипт для настройки личного VPN-сервера на Ubuntu / Debian / Rocky Linux с поддержкой современных, устойчивых к блокировкам протоколов и сплит-маршрутизацией исходящего трафика через Cloudflare WARP.
+Автоматический скрипт для настройки личного VPN-сервера на Ubuntu / Debian / Rocky Linux.
 
-## Возможности
+## Компоненты
 
-1. **Оптимизация сети:** вычисление буферов `sysctl` под RAM и ядра CPU, TCP BBR + `fq`, TCP Fast Open, MTU Probing.
-2. **Безопасность:** UFW (закрыты все порты кроме SSH и VPN), ICMP-block, fail2ban, SSH только по ключам.
-3. **Mieru (mita):** DPI-устойчивый протокол с поддержкой **TCP + UDP** транспорта.
-4. **Hysteria 2:** QUIC-протокол с обфускацией `salamander`, **ECDSA-сертификатами** и QUIC-буферами, масштабируемыми под RAM.
-5. **Cloudflare WARP:** сплит-маршрутизация VPN-трафика через WARP (SSH идёт напрямую).
-6. **Безопасная подписка:** URL для подписки генерируется как рандомный хеш (например, `http://IP:8080/a1b2c3d4e5f6...`), чтобы нельзя было перебрать ссылку.
-7. **Многопользовательность:** добавление/удаление пользователей через `--add-user` / `--remove-user`.
+- **Mieru (mita)** — DPI-устойчивый протокол, TCP + UDP
+- **Hysteria 2** — QUIC-протокол с обфускацией salamander, ECDSA-сертификаты
+- **Xray-core** — VLESS/Reality, Trojan, Shadowsocks
+- **NaiveProxy** — HTTPS forward proxy через Caddy
+- **Cloudflare WARP** — сплит-маршрутизация VPN-трафика
+- **VPN Panel** — Go веб-интерфейс для управления пользователями
 
 ## Требования
 
-* **ОС:** Ubuntu 22.04/24.04, Debian, Rocky Linux, CentOS, AlmaLinux
-* **Права:** root
-* **SSH-порт:** 22 (или кастомный через `SSH_PORT`)
+- Ubuntu 22.04/24.04, Debian 11/12, Rocky Linux
+- Root-доступ
+- SSH-порт 22 (или кастомный через `SSH_PORT`)
 
 ## Быстрый запуск
 
@@ -32,29 +31,28 @@ SSH_PORT=2222 sudo -E bash setup.sh
 
 ## Управление
 
-### Статус сервисов
-
 ```bash
+# Статус всех сервисов
 sudo bash setup.sh --status
-```
 
-### Добавить пользователя
-
-```bash
+# Добавить пользователя
 sudo bash setup.sh --add-user myuser
-```
 
-### Удалить пользователя
-
-```bash
+# Удалить пользователя
 sudo bash setup.sh --remove-user myuser
-```
 
-### Полное удаление VPN-сервера
+# Ключи и ссылки панели
+sudo bash setup.sh --keys
 
-```bash
+# Полное удаление
 sudo bash setup.sh --uninstall
 ```
+
+## Веб-панель
+
+После установки панель доступна по адресу `https://IP:ПОРТ` (порт рандомный, выводится в конце установки).
+
+Управление: пользователи, ключи, логи, настройки, рестарт сервисов.
 
 ## Проверка после установки
 
@@ -72,10 +70,13 @@ sudo -u hysteria curl https://www.cloudflare.com/cdn-cgi/trace/ | grep warp
 
 ### Статус сервисов
 
-* **Mieru:** `systemctl status mita`
-* **Hysteria 2:** `systemctl status hysteria-server`
-* **WARP:** `wg show wgcf-warp`
-* **fail2ban:** `systemctl status fail2ban`
+- **Mieru:** `systemctl status mita`
+- **Hysteria 2:** `systemctl status hysteria-server`
+- **Xray:** `systemctl status xray`
+- **NaiveProxy:** `systemctl status caddy-naive`
+- **WARP:** `wg show wgcf-warp`
+- **Panel:** `systemctl status vpn-panel`
 
 ---
-*Дисклеймер: Скрипт предоставляется "как есть" (As Is). Вы используете его на свой страх и риск.*
+
+*Дисклеймер: Скрипт предоставляется "как есть" (As Is).*

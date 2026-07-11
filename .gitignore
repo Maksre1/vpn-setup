@@ -1,25 +1,27 @@
-# Временные файлы состояния скрипта (на VPS)
+# Go binaries (собираются при установке)
+panel_go/vpn-panel
+panel_go/vpn-sub
+vpn-panel
+vpn-sub
+
+# VPS state files
 /etc/vpn-setup-state/
 *.done
 *.env
 
-# Логи
+# Logs
 *.log
 
-# Локальные системные файлы macOS
+# macOS
 .DS_Store
 
-# Файлы конфигураций с ключами (если генерируются локально)
+# SSL certs/keys (генерируются на сервере)
 *.key
 *.crt
-*.json
-*.yaml
-*.conf
 
-# Go Binaries
-vpn-panel
-vpn-sub
-panel_go/vpn-panel
-panel_go/vpn-sub
-/panel_go/vpn-panel
-/panel_go/vpn-sub
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
