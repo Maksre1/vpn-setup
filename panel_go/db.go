@@ -598,6 +598,11 @@ acl:
 `)
 
 	obfsPassword, _ := settings["obfs_password"].(string)
+	// Fallback: читаем obfs_password из hysteria2.env если не найден в БД
+	if obfsPassword == "" {
+		h2Env := getHysteria2Config()
+		obfsPassword = h2Env["H2_OBFS_PASS"]
+	}
 	yamlBuilder.WriteString(fmt.Sprintf(`obfs:
   type: salamander
   salamander:
@@ -623,8 +628,13 @@ stats:
 	}
 	_ = exec.Command("chown", "hysteria:hysteria", configPath).Run()
 
-	// Generate and write ACL file (Hysteria 2 uses direct(all) syntax)
+	// Generate and write ACL file with WARP routing
 	aclBuilder := strings.Builder{}
+	if len(warpUsers) > 0 {
+		for _, u := range warpUsers {
+			aclBuilder.WriteString(fmt.Sprintf("user(%s) warp\n", u))
+		}
+	}
 	aclBuilder.WriteString("direct(all)\n")
 
 	aclPath := "/etc/hysteria/acl.txt"

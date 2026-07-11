@@ -1231,6 +1231,133 @@ EOF
 }
 
 # =============================================================================
+# 7.6. setup_naiveproxy
+# =============================================================================
+setup_naiveproxy() {
+    step_begin "NaiveProxy (Caddy forward proxy)"
+
+    if is_done "setup_naiveproxy"; then
+        step_skip; return 0
+    fi
+
+    # Установка caddy-naive
+    local caddy_bin="/usr/local/bin/caddy-naive"
+    if [[ ! -f "$caddy_bin" ]]; then
+        log_step "Скачивание caddy-naive..."
+        local caddy_url="https://github.com/caddyserver/caddy/releases/download/v2.9.1/caddy_2.9.1_linux_amd64.tar.gz"
+        curl -fsSL "$caddy_url" -o /tmp/caddy.tar.gz >> "$LOG_FILE" 2>&1
+        tar xzf /tmp/caddy.tar.gz -C /tmp caddy >> "$LOG_FILE" 2>&1
+        mv /tmp/caddy "$caddy_bin"
+        chmod +x "$caddy_bin"
+        rm -f /tmp/caddy.tar.gz
+        log_ok "caddy-naive установлен"
+    else
+        log_ok "caddy-naive уже установлен"
+    fi
+
+    # Генерация самоподписанного сертификата для TLS
+    local ssl_dir="/etc/vpn-setup-ssl-fallback"
+    mkdir -p "$ssl_dir"
+    local server_ip
+    server_ip=$(get_server_ip)
+    local sni="${server_ip//./-}.sslip.io"
+
+    if [[ ! -f "$ssl_dir/server.key" ]]; then
+        log_step "Генерация SSL-сертификата для NaiveProxy..."
+        openssl ecparam -genkey -name prime256v1 -out "$ssl_dir/server.key" 2>/dev/null
+        openssl req -new -x509 -key "$ssl_dir/server.key" -out "$ssl_dir/server.crt" \
+            -days 3650 -nodes -subj "/CN=${sni}/O=Fallback/C=US" 2>/dev/null
+        chmod 600 "$ssl_dir/server.key"
+        chmod 644 "$ssl_dir/server.crt"
+    fi
+
+    # Генерация пароля для default_user из БД или создание нового
+    local naive_pass=""
+    if [[ -f "/etc/vpn-panel/panel.db" ]]; then
+        apt-get install -y sqlite3 >> "$LOG_FILE" 2>&1 || true
+        naive_pass=$(sqlite3 /etc/vpn-panel/panel.db "SELECT password FROM users WHERE username='default_user' LIMIT 1;" 2>/dev/null || echo "")
+    fi
+    if [[ -z "$naive_pass" ]]; then
+        naive_pass=$(openssl rand -base64 22 | tr -d '/+=' | head -c 24)
+    fi
+
+    # Генерация bcrypt-хеша для Caddy
+    local naive_hash
+    naive_hash=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'${naive_pass}', bcrypt.gensalt()).decode())" 2>/dev/null || echo "")
+
+    # Конфиг Caddyfile с правильным @connect matcher
+    cat > /etc/caddy-naive/Caddyfile <<CADDYEOF
+{
+    order forward_proxy before file_server
+}
+
+:443, ${sni} {
+    tls ${ssl_dir}/server.crt ${ssl_dir}/server.key
+
+    @connect {
+        method CONNECT
+    }
+
+    handle @connect {
+        forward_proxy {
+            basic_auth default_user ${naive_hash}
+            hide_ip
+            hide_via
+            probe_resistance
+        }
+    }
+
+    handle {
+        reverse_proxy https://www.microsoft.com {
+            header_up Host {upstream_hostport}
+        }
+    }
+}
+CADDYEOF
+
+    # Systemd unit
+    cat > /etc/systemd/system/caddy-naive.service <<EOF
+[Unit]
+Description=Caddy for NaiveProxy
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${caddy_bin} run --environ --config /etc/caddy-naive/Caddyfile
+Restart=always
+RestartSec=5s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1
+    systemctl enable caddy-naive >> "$LOG_FILE" 2>&1 || true
+    if systemctl restart caddy-naive >> "$LOG_FILE" 2>&1; then
+        log_ok "caddy-naive запущен"
+    else
+        log_fail "Не удалось запустить caddy-naive"
+    fi
+
+    ufw allow 443/tcp comment "NaiveProxy" >> "$LOG_FILE" 2>&1
+    ufw allow 443/udp comment "NaiveProxy HTTP/3" >> "$LOG_FILE" 2>&1
+
+    # Сохраняем настройки NaiveProxy
+    cat > "$STATE_DIR/naiveproxy.env" <<EOF
+NAIVE_PORT=443
+NAIVE_USER=default_user
+NAIVE_PASS="${naive_pass}"
+NAIVE_SNI="${sni}"
+NAIVE_HASH="${naive_hash}"
+EOF
+    chmod 600 "$STATE_DIR/naiveproxy.env"
+
+    mark_done "setup_naiveproxy"
+    step_finish
+}
+
+# =============================================================================
 # 8. print_summary
 # =============================================================================
 print_summary() {
@@ -1504,6 +1631,16 @@ EOF
     printf "  %s\n" "──────────────────────────────────────────────────────────"
     printf "  Полные креденциалы: ${BOLD}%s${NC}\n" "$INFO_FILE"
 
+    # NaiveProxy
+    if [[ -f "$STATE_DIR/naiveproxy.env" ]]; then
+        source "$STATE_DIR/naiveproxy.env"
+        local naive_sni="${NAIVE_SNI:-${server_ip//./-}.sslip.io}"
+        printf "\n  ${BOLD}NaiveProxy:${NC}\n"
+        printf "  Сервер: ${BOLD}%s${NC}  Порт: ${BOLD}443${NC}\n" "$naive_sni"
+        printf "  Логин: ${BOLD}%s${NC}  Пароль: ${BOLD}%s${NC}\n" "${NAIVE_USER:-default_user}" "${NAIVE_PASS:-?}"
+        printf "  TLS: самоподписанный (отключить проверку в клиенте)\n\n"
+    fi
+
     # VPN Panel
     if [[ -f "$STATE_DIR/panel.env" ]]; then
         source "$STATE_DIR/panel.env"
@@ -1529,6 +1666,8 @@ do_uninstall() {
     systemctl disable mita 2>/dev/null || true
     systemctl stop vpn-sub 2>/dev/null || true
     systemctl disable vpn-sub 2>/dev/null || true
+    systemctl stop caddy-naive 2>/dev/null || true
+    systemctl disable caddy-naive 2>/dev/null || true
     systemctl stop warp-routing 2>/dev/null || true
     systemctl disable warp-routing 2>/dev/null || true
     systemctl stop "wg-quick@wgcf-warp" 2>/dev/null || true
@@ -1540,6 +1679,7 @@ do_uninstall() {
     # Удаляем systemd-юниты
     rm -f /etc/systemd/system/hysteria-server.service
     rm -f /etc/systemd/system/vpn-sub.service
+    rm -f /etc/systemd/system/caddy-naive.service
     rm -f /etc/systemd/system/warp-routing.service
     rm -f /etc/systemd/system/vpn-panel.service
     rm -f /etc/network/if-up.d/warp-routing
@@ -1553,6 +1693,9 @@ do_uninstall() {
     rm -rf /etc/vpn-panel
     rm -rf /opt/vpn-panel
     rm -rf /var/www/html
+    rm -rf /etc/caddy-naive
+    rm -rf /etc/vpn-setup-ssl-fallback
+    rm -f /usr/local/bin/caddy-naive
     rm -f /root/vpn-setup-info.txt
     rm -f /root/vpn-setup-sub.txt
     rm -f /etc/sysctl.d/99-vpn-tuning.conf
@@ -1606,6 +1749,13 @@ do_status() {
         printf "  ${GREEN}●${NC}  Xray (VLESS/...)      ${GREEN}работает${NC}\n"
     else
         printf "  ${RED}●${NC}  Xray (VLESS/...)      ${RED}остановлен${NC}\n"
+    fi
+
+    # NaiveProxy
+    if systemctl is-active --quiet caddy-naive 2>/dev/null; then
+        printf "  ${GREEN}●${NC}  NaiveProxy (:443)     ${GREEN}работает${NC}\n"
+    else
+        printf "  ${RED}●${NC}  NaiveProxy (:443)     ${RED}остановлен${NC}\n"
     fi
 
     # WARP
@@ -2066,6 +2216,7 @@ main() {
             install_singbox
             setup_warp
             setup_subscription_server
+            setup_naiveproxy
             setup_fail2ban
             setup_panel
             print_summary
@@ -2094,6 +2245,7 @@ main() {
                 install_singbox
                 setup_warp
                 setup_subscription_server
+                setup_naiveproxy
                 setup_fail2ban
                 setup_panel
                 print_summary
