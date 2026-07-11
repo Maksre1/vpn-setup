@@ -14,6 +14,15 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
+# Отладочный режим: VPN_DEBUG=1 bash setup.sh
+if [[ "${VPN_DEBUG:-}" == "1" ]]; then
+    set -x
+fi
+
+# Логирование: VPN_LOG=/path/to/file bash setup.sh
+# По умолчанию — тихий режим (вывод только ошибок в терминал)
+readonly LOG_FILE="${VPN_LOG:-/dev/null}"
+
 # Обработчик ошибок для красивого вывода при аварийном выходе
 cleanup_err() {
     local exit_code=$?
@@ -23,12 +32,15 @@ cleanup_err() {
     fi
     if [[ "$exit_code" -ne 0 ]]; then
         printf "\n\n  ${RED}✗${NC}  Скрипт прервался на строке %s (код: %s)\n" "$line_no" "$exit_code"
+        if [[ "$LOG_FILE" != "/dev/null" && -f "$LOG_FILE" ]]; then
+            printf "  Последние записи из лога:\n"
+            tail -n 10 "$LOG_FILE" 2>/dev/null | sed 's/^/    /'
+        fi
     fi
 }
 trap 'cleanup_err $LINENO' EXIT
 
 # ── Глобальные переменные ────────────────────────────────────────────────────
-readonly LOG_FILE="/dev/null"
 readonly STATE_DIR="/etc/vpn-setup-state"
 readonly MIERU_CONFIG_DIR="/etc/mita"
 readonly H2_CONFIG_DIR="/etc/hysteria"
@@ -997,145 +1009,29 @@ EOF
         endpoint_ip=$(grep -i "^Endpoint" /etc/wireguard/wgcf-warp.conf | awk -F'=' '{print $2}' | tr -d ' ' | cut -d':' -f1 | tr -d '[]')
     fi
 
-    local mita_uid hysteria_uid
-    mita_uid=$(id -u mita 2>/dev/null || echo "")
-    hysteria_uid=$(id -u hysteria 2>/dev/null || echo "")
+    # Копируем скрипт правил
+    local rules_script="/etc/vpn-setup-state/apply-warp-routes.sh"
+    local src_rules="${SCRIPT_DIR}/apply-warp-routes.sh"
+    if [[ -f "$src_rules" ]]; then
+        cp "$src_rules" "$rules_script"
+    else
+        curl -fsSL "https://raw.githubusercontent.com/Maksre1/vpn-setup/main/apply-warp-routes.sh" -o "$rules_script" >> "$LOG_FILE" 2>&1 || true
+    fi
+    chmod +x "$rules_script"
 
-    # Очищаем старые правила, если они были, чтобы избежать дублирования
-    iptables -t mangle -D OUTPUT -o lo -j RETURN 2>/dev/null || true
-    iptables -t mangle -D OUTPUT -p udp --dport 53 -j RETURN 2>/dev/null || true
-    iptables -t mangle -D OUTPUT -p tcp --dport 53 -j RETURN 2>/dev/null || true
-    if [[ -n "$MIERU_PORT" ]]; then
-        iptables -t mangle -D OUTPUT -p tcp --sport "$MIERU_PORT" -j RETURN 2>/dev/null || true
-    fi
-    if [[ -n "${MIERU_UDP_PORT:-}" ]]; then
-        iptables -t mangle -D OUTPUT -p udp --sport "$MIERU_UDP_PORT" -j RETURN 2>/dev/null || true
-    fi
-    if [[ -n "$H2_PORT" ]]; then
-        iptables -t mangle -D OUTPUT -p udp --sport "$H2_PORT" -j RETURN 2>/dev/null || true
-    fi
-    if [[ -n "$endpoint_ip" ]]; then
-        if [[ "$endpoint_ip" =~ : ]]; then
-            ip6tables -t mangle -D OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
-        else
-            iptables -t mangle -D OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
-        fi
-    fi
-    if [[ -n "$mita_uid" ]]; then
-        iptables -t mangle -D OUTPUT -m owner --uid-owner "$mita_uid" -j MARK --set-mark 0x1 2>/dev/null || true
-    fi
-    if [[ -n "$endpoint_ip" ]]; then
-        if [[ "$endpoint_ip" =~ : ]]; then
-            ip6tables -t mangle -D OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
-        else
-            iptables -t mangle -D OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
-        fi
-    fi
-
-    # Накатываем новые правила
-    iptables -t mangle -A OUTPUT -o lo -j RETURN
-    iptables -t mangle -A OUTPUT -p udp --dport 53 -j RETURN
-    iptables -t mangle -A OUTPUT -p tcp --dport 53 -j RETURN
-    if [[ -n "$MIERU_PORT" ]]; then
-        iptables -t mangle -A OUTPUT -p tcp --sport "$MIERU_PORT" -j RETURN
-    fi
-    if [[ -n "${MIERU_UDP_PORT:-}" ]]; then
-        iptables -t mangle -A OUTPUT -p udp --sport "$MIERU_UDP_PORT" -j RETURN
-    fi
-    if [[ -n "$H2_PORT" ]]; then
-        iptables -t mangle -A OUTPUT -p udp --sport "$H2_PORT" -j RETURN
-    fi
-    if [[ -n "$endpoint_ip" ]]; then
-        if [[ "$endpoint_ip" =~ : ]]; then
-            ip6tables -t mangle -A OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
-        else
-            iptables -t mangle -A OUTPUT -d "$endpoint_ip" -j RETURN
-        fi
-    fi
-    if [[ -n "$mita_uid" ]]; then
-        iptables -t mangle -A OUTPUT -m owner --uid-owner "$mita_uid" -j MARK --set-mark 0x1
-    fi
+    # Применяем правила
+    bash "$rules_script" >> "$LOG_FILE" 2>&1
 
     ip rule add fwmark 0x1 table 200 priority 100 2>/dev/null || true
     ip rule add from 172.16.0.2 table 200 priority 90 2>/dev/null || true
 
-    # Включаем маскарадинг в NAT
-    iptables -t nat -D POSTROUTING -o wgcf-warp -j MASQUERADE 2>/dev/null || true
-    iptables -t nat -A POSTROUTING -o wgcf-warp -j MASQUERADE
-
+    # Systemd unit для восстановления правил после перезагрузки
     cat > /etc/network/if-up.d/warp-routing <<'ROUTING_SCRIPT'
 #!/bin/bash
 sleep 5
-STATE_DIR="/etc/vpn-setup-state"
-[ -f "$STATE_DIR/mieru.env" ] && source "$STATE_DIR/mieru.env"
-[ -f "$STATE_DIR/hysteria2.env" ] && source "$STATE_DIR/hysteria2.env"
-
-mkdir -p /etc/iproute2
-if [ ! -f /etc/iproute2/rt_tables ]; then
-    cat > /etc/iproute2/rt_tables <<EOF
-255	local
-254	main
-253	default
-0	unspec
-EOF
-fi
-if ! grep -q "^200 " /etc/iproute2/rt_tables; then
-    echo "200 warp" >> /etc/iproute2/rt_tables
-fi
-if ip link show wgcf-warp &>/dev/null; then
-    ip route add default dev wgcf-warp table 200 2>/dev/null || true
-fi
-if ! ip rule show 2>/dev/null | grep -q "fwmark 0x1 lookup 200"; then
-    ip rule add fwmark 0x1 table 200 priority 100 2>/dev/null || true
-fi
-
-endpoint_ip=""
-if [ -f "/etc/wireguard/wgcf-warp.conf" ]; then
-    endpoint_ip=$(grep -i "^Endpoint" /etc/wireguard/wgcf-warp.conf | awk -F'=' '{print $2}' | tr -d ' ' | cut -d':' -f1 | tr -d '[]')
-fi
-
-iptables -t mangle -F OUTPUT 2>/dev/null || true
-ip6tables -t mangle -F OUTPUT 2>/dev/null || true
-
-iptables -t mangle -A OUTPUT -o lo -j RETURN
-iptables -t mangle -A OUTPUT -p udp --dport 53 -j RETURN
-iptables -t mangle -A OUTPUT -p tcp --dport 53 -j RETURN
-
-if [ -n "$H2_PORT" ]; then
-    iptables -t mangle -A OUTPUT -p udp --sport "$H2_PORT" -j RETURN
-fi
-if [ -n "$MIERU_PORT" ]; then
-    iptables -t mangle -A OUTPUT -p tcp --sport "$MIERU_PORT" -j RETURN
-fi
-if [ -n "${MIERU_UDP_PORT:-}" ]; then
-    iptables -t mangle -A OUTPUT -p udp --sport "$MIERU_UDP_PORT" -j RETURN
-fi
-if [ -n "$endpoint_ip" ]; then
-    if [[ "$endpoint_ip" =~ : ]]; then
-        ip6tables -t mangle -A OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
-    else
-        iptables -t mangle -A OUTPUT -d "$endpoint_ip" -j RETURN 2>/dev/null || true
-    fi
-fi
-
-mita_uid=$(id -u mita 2>/dev/null)
-if [ -n "$mita_uid" ]; then
-    iptables -t mangle -A OUTPUT -m owner --uid-owner "$mita_uid" -j MARK --set-mark 0x1
-fi
-hysteria_uid=$(id -u hysteria 2>/dev/null)
-if [ -n "$hysteria_uid" ]; then
-    iptables -t mangle -A OUTPUT -m owner --uid-owner "$hysteria_uid" -j MARK --set-mark 0x1
-fi
-
-iptables -t nat -D POSTROUTING -o wgcf-warp -j MASQUERADE 2>/dev/null || true
-iptables -t nat -A POSTROUTING -o wgcf-warp -j MASQUERADE
+/etc/vpn-setup-state/apply-warp-routes.sh
 ROUTING_SCRIPT
     chmod +x /etc/network/if-up.d/warp-routing
-
-    if command -v iptables-save &>/dev/null; then
-        mkdir -p /etc/iptables
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-    fi
 
     cat > /etc/systemd/system/warp-routing.service <<EOF
 [Unit]
@@ -1158,6 +1054,64 @@ EOF
     popd >/dev/null
 
     mark_done "setup_warp"
+    step_finish
+}
+
+# =============================================================================
+# 7.4. build_go_binaries
+# =============================================================================
+build_go_binaries() {
+    step_begin "Сборка Go-бинарников"
+
+    if is_done "build_go_binaries"; then
+        step_skip; return 0
+    fi
+
+    # Проверяем наличие Go
+    if ! command -v go &>/dev/null; then
+        log_step "Установка Go..."
+        local go_ver="1.22.5"
+        local go_url="https://go.dev/dl/go${go_ver}.linux-amd64.tar.gz"
+        curl -fsSL "$go_url" -o /tmp/go.tar.gz >> "$LOG_FILE" 2>&1
+        tar -C /usr/local -xzf /tmp/go.tar.gz >> "$LOG_FILE" 2>&1
+        rm -f /tmp/go.tar.gz
+        export PATH=$PATH:/usr/local/go/bin
+        echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/go.sh
+    fi
+    log_ok "Go установлен: $(go version 2>/dev/null | head -1)"
+
+    local panel_dir="/opt/vpn-panel"
+    mkdir -p "$panel_dir"
+
+    local src_dir="${SCRIPT_DIR}/panel_go"
+
+    # Сборка vpn-panel
+    if [[ -f "${src_dir}/main.go" ]]; then
+        log_step "Сборка vpn-panel..."
+        cd "$src_dir"
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "${panel_dir}/vpn-panel" . >> "$LOG_FILE" 2>&1
+        chmod +x "${panel_dir}/vpn-panel"
+        log_ok "vpn-panel собран"
+    else
+        log_fail "Исходники panel_go/main.go не найдены"
+        return 1
+    fi
+
+    # Сборка vpn-sub
+    if [[ -f "${src_dir}/sub.go" ]]; then
+        log_step "Сборка vpn-sub..."
+        cd "$src_dir"
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "${panel_dir}/vpn-sub" sub.go >> "$LOG_FILE" 2>&1
+        chmod +x "${panel_dir}/vpn-sub"
+        log_ok "vpn-sub собран"
+    else
+        log_fail "Исходники panel_go/sub.go не найдены"
+        return 1
+    fi
+
+    cd "$SCRIPT_DIR"
+
+    mark_done "build_go_binaries"
     step_finish
 }
 
@@ -1194,12 +1148,10 @@ setup_subscription_server() {
     # Удаление старого скрипта python
     rm -f "${panel_dir}/subscription_server.py"
 
-    # Копирование Go бинарника vpn-sub
-    local local_binary="${SCRIPT_DIR}/panel_go/vpn-sub"
-    if [[ -f "$local_binary" ]]; then
-        cp "$local_binary" "${panel_dir}/vpn-sub"
-    else
-        curl -fsSL "https://raw.githubusercontent.com/Maksre1/vpn-setup/main/panel_go/vpn-sub" -o "${panel_dir}/vpn-sub" >> "$LOG_FILE" 2>&1 || true
+    # vpn-sub должен быть собран на предыдущем шаге (build_go_binaries)
+    if [[ ! -f "${panel_dir}/vpn-sub" ]]; then
+        log_fail "vpn-sub не найден. Убедитесь, что build_go_binaries выполнился."
+        return 1
     fi
     chmod +x "${panel_dir}/vpn-sub"
 
@@ -1683,6 +1635,7 @@ do_uninstall() {
     rm -f /etc/systemd/system/warp-routing.service
     rm -f /etc/systemd/system/vpn-panel.service
     rm -f /etc/network/if-up.d/warp-routing
+    rm -f /etc/vpn-setup-state/apply-warp-routes.sh
 
     # Удаляем конфиги и данные
     rm -rf /etc/hysteria
@@ -2074,13 +2027,10 @@ setup_panel() {
     # Удаление старых Python файлов и папок (templates, static) для чистоты
     rm -rf "$panel_dir"/{templates,static,app.py,models.py,utils.py,manage_users.py,subscription_server.py,traffic_daemon.py}
 
-    # Копирование скомпилированного Go бинарного файла
-    local local_binary="${SCRIPT_DIR}/panel_go/vpn-panel"
-    if [[ -f "$local_binary" ]]; then
-        cp "$local_binary" "${panel_dir}/vpn-panel"
-    else
-        # Fallback: скачивание с GitHub если бинарника нет локально
-        curl -fsSL "https://raw.githubusercontent.com/Maksre1/vpn-setup/main/panel_go/vpn-panel" -o "${panel_dir}/vpn-panel" >> "$LOG_FILE" 2>&1 || true
+    # vpn-panel должен быть собран на предыдущем шаге (build_go_binaries)
+    if [[ ! -f "${panel_dir}/vpn-panel" ]]; then
+        log_fail "vpn-panel не найден. Убедитесь, что build_go_binaries выполнился."
+        return 1
     fi
     chmod +x "${panel_dir}/vpn-panel"
 

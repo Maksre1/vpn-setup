@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -51,18 +55,21 @@ func main() {
 	var adminCount int
 	_ = db.QueryRow("SELECT COUNT(*) FROM admin").Scan(&adminCount)
 	if adminCount == 0 {
-		defaultPass := "admin"
+		// Читаем пароль из admin_password.txt (сгенерирован при установке)
+		defaultPass := genPassword(16)
 		if data, err := os.ReadFile("/etc/vpn-panel/admin_password.txt"); err == nil {
 			content := strings.TrimSpace(string(data))
 			if strings.Contains(content, ":") {
 				parts := strings.SplitN(content, ":", 2)
-				defaultPass = parts[1]
+				if len(parts) > 1 && parts[1] != "" {
+					defaultPass = parts[1]
+				}
 			}
 		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(defaultPass), bcrypt.DefaultCost)
 		if err == nil {
 			_, _ = db.Exec("INSERT INTO admin (username, password_hash) VALUES (?, ?)", "admin", string(hash))
-			log.Printf("Seeded admin user using password from admin_password.txt")
+			log.Printf("Admin user created with password from admin_password.txt")
 		}
 	}
 	// Sync database users to configuration files and generate HTML subscriptions at startup
@@ -94,18 +101,37 @@ func main() {
 	// 4. Start background traffic accounting
 	startTrafficDaemon()
 
-	// 5. Setup TLS Certificates and listen
+	// 5. Setup TLS Certificates and listen with graceful shutdown
 	port := getPanelPort()
 	h2 := getHysteria2Config()
 	certDir := "/etc/hysteria/certs"
 
 	keyPath, crtPath := genEcdsaCert(certDir, getOptString(h2, "H2_CERT_CN", "vpn-panel"))
 
-	log.Printf("VPN Panel starting on port %s...", port)
-	err := r.RunTLS(":"+port, crtPath, keyPath)
-	if err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: r,
 	}
+
+	// Graceful shutdown
+	go func() {
+		log.Printf("VPN Panel starting on port %s...", port)
+		if err := srv.ListenAndServeTLS(crtPath, keyPath); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
+	}
+	log.Println("Server exited")
 }
 
 func getPanelPort() string {

@@ -25,6 +25,38 @@ import (
 
 var sessionKey []byte
 
+// Rate limiting for login
+type loginAttempt struct {
+	timestamps []time.Time
+}
+
+var loginAttempts = make(map[string]*loginAttempt)
+const loginRateLimit = 10
+const loginRateWindow = 5 * time.Minute
+
+func isLoginRateLimited(ip string) bool {
+	now := time.Now()
+	a, exists := loginAttempts[ip]
+	if !exists {
+		a = &loginAttempt{}
+		loginAttempts[ip] = a
+	}
+	// Clean old attempts
+	cutoff := now.Add(-loginRateWindow)
+	var valid []time.Time
+	for _, t := range a.timestamps {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	a.timestamps = valid
+	if len(a.timestamps) >= loginRateLimit {
+		return true
+	}
+	a.timestamps = append(a.timestamps, now)
+	return false
+}
+
 type SessionData struct {
 	AdminID   int    `json:"admin_id"`
 	Username  string `json:"username"`
@@ -240,6 +272,15 @@ func setupRoutes(r *gin.Engine) {
 	})
 
 	r.POST("/login", func(c *gin.Context) {
+		// Rate limiting: max 10 attempts per 5 minutes per IP
+		clientIP := c.ClientIP()
+		if isLoginRateLimited(clientIP) {
+			tmpl := templateCache["login.html"]
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			_ = tmpl.Execute(c.Writer, gin.H{"Error": "Слишком много попыток. Подождите 5 минут."})
+			return
+		}
+
 		username := c.PostForm("username")
 		password := c.PostForm("password")
 
