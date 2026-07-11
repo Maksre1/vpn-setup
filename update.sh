@@ -100,7 +100,7 @@ do_status() {
 
     # Сервисы
     printf "\n  ${BOLD}Сервисы:${NC}\n"
-    for svc in mita hysteria-server "wg-quick@wgcf-warp" fail2ban vpn-panel vpn-sub; do
+    for svc in mita hysteria-server caddy-naive "wg-quick@wgcf-warp" fail2ban vpn-panel vpn-sub; do
         if systemctl is-active --quiet "$svc" 2>/dev/null; then
             ok "$svc"
         else
@@ -151,6 +151,8 @@ do_backup() {
         etc/vpn-setup-state/ \
         etc/vpn-panel/ \
         opt/vpn-panel/ \
+        etc/caddy-naive/ \
+        etc/vpn-setup-ssl-fallback/ \
         2>/dev/null || true
 
     # Храним последние 10 бэкапов
