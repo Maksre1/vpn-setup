@@ -686,7 +686,7 @@ tls:
 auth:
   type: userpass
   userpass:
-    admin: ${H2_PASS}
+    default_user: ${H2_PASS}
 obfs:
   type: salamander
   salamander:
@@ -2165,6 +2165,7 @@ main() {
             install_hysteria2
             install_singbox
             setup_warp
+            build_go_binaries
             setup_subscription_server
             setup_naiveproxy
             setup_fail2ban
@@ -2194,6 +2195,7 @@ main() {
                 install_hysteria2
                 install_singbox
                 setup_warp
+                build_go_binaries
                 setup_subscription_server
                 setup_naiveproxy
                 setup_fail2ban
